@@ -11,8 +11,8 @@ Package identity and testing
   The package identity is FM-1_7869 (tools/build.py FM1_IDENTITY). The update loader keeps the Felucca
   loader's own name, ota-FM-1_900 (firmware/loader/loader.c), as Felucca, Dinghy and X0X do.
   The Drums12-Transpose firmware was tested by Hans on a real FM-1 as FM-1_900. The FM-1_7869 package,
-  with the loader that accepts both flash chips (0x856014 and 0xB36014), has not yet been flashed:
-  Hans must flash and re-test it on his real FM-1 before it is released or listed.
+  with the loader that accepts both flash chips (0x856014 and 0xB36014), was hardware-tested by
+  Hans on his own real FM-1 on Nov 22, 2026.
 
 
 The load screen's HV logo (the HanzVolt "HV" logo, the same picture FORM 1.3 shows at boot)

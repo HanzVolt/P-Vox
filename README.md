@@ -7,7 +7,7 @@ image IMG_6362.jpg
 
 - Package identity: **FM-1_7869** (P-Vox's own; `tools/build.py`, `FM1_IDENTITY`). The update loader keeps the Felucca loader's name `ota-FM-1_900`.
 - The Drums12-Transpose firmware was tested by Hans on a real FM-1 as FM-1_900.
-- **The FM-1_7869 package is not yet hardware-tested:** Hans must flash and re-test it on his real FM-1 (install from V15 and from another firmware, and leave it again) before it is released or listed.
+- The FM-1_7869 package was hardware-tested by Hans on his own real FM-1 (Nov 22, 2026).
 - The update loader accepts both FM-1 flash chips: Puya P25Q80 (JEDEC 0x856014) and UC25HQ80 (0xB36014). It has not yet run on a newer-chip unit.
 
 ## Source
