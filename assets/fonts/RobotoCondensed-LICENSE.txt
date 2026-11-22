@@ -1,0 +1,6 @@
+RobotoCondensed-VariableFont_wght.ttf: Roboto Condensed, Copyright 2011 Google Inc.
+Licensed under the Apache License, Version 2.0 (name table IDs 13/14 of the file itself):
+http://www.apache.org/licenses/LICENSE-2.0
+Copied unchanged from the box's Google Fonts set (/usr/share/fonts/truetype/sand-box/google/Roboto Condensed/).
+Used only by tools/gen_cyr_font.py to render the bitmap glyphs in firmware/gen/altair_cyr_font.h.
+Apache-2.0 material may be combined into a GPL-3.0 work.
