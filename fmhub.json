@@ -1,0 +1,7 @@
+{
+  "what": "A Polivoks-style synthesizer for the M-VAVE FM-1, with 12-pattern drum packs for house, dubstep, drum and bass and techno, a sequencer with live transpose, and a drum pattern that is saved across power cycles.",
+  "author": "Hans Volt",
+  "kinds": [
+    "synth"
+  ]
+}
