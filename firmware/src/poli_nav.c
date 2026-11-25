@@ -62,11 +62,17 @@ static int8_t acc_dir[4];
 static uint8_t acc_have[4];
 static uint8_t mod_osc_en;
 static uint32_t nav_gen;
+#if POLI_VALREPAINT
+static uint32_t nav_val_gen PV_FEAT_BSS;     /* Parity: a value-only change (volt.c repaints the panel only) */
+#endif
 static uint32_t nav_edits;       /* sound edits by knob or switch (preset dirty flag) */
 static int16_t pos[SLOT_COUNT];
 static int nav_klo(int kind);
 static int nav_khi(int kind);
 static void lfo_push(void);
+#if POLI_ARP
+#include "poli_arp.c"      /* Parity (23 Nov 2026): the Elite's classic arp on the FM-1 (unity build) */
+#endif
 
 static int32_t scale_u7(int p, int32_t lo, int32_t hi)
 {
@@ -523,6 +529,9 @@ void poli_nav_init(void)
     lang = 0;
     msg = MSG_NONE;
     midi_ch = 1;
+#if POLI_ARP
+    poli_arp_init();
+#endif
     key_track = 62;
     polivoks_set_key_track(62);
     nav_now_ms = 0;
@@ -592,7 +601,17 @@ void poli_nav_home(void)
 
 /* Wander-Drift: the order SELECT walks: ARPEGGIO, WANDER, SEQUENCER, DRUMS, DRUM DRIFT, GROOVE, DELAY, REVERB */
 /* Drift-Full: ARPEGGIO, WANDER, SEQUENCER, DRUMS, GENERATE, DRUM DRIFT, GROOVE, DRUM FX, PERFORM, DELAY, REVERB */
-static const int8_t XW_ORDER[NAV_XWIN] = { 0, 5, 1, 2, 8, 6, 7, 9, 10, 3, 4 };
+/* Drum-Step: DRUM STEP (11) right after DRUMS */
+/* Parity (23 Nov 2026): CLASSIC ARP right after ARPEGGIO; PAD REC right after DRUM STEP (as on the Elite) */
+#if POLI_PADREC && POLI_ARP
+static const int8_t XW_ORDER[NAV_XWIN] = { 0, XW_CARP, 5, 1, 2, 11, XW_PADREC, 8, 6, 7, 9, 10, 3, 4 };
+#elif POLI_PADREC
+static const int8_t XW_ORDER[NAV_XWIN] = { 0, 5, 1, 2, 11, XW_PADREC, 8, 6, 7, 9, 10, 3, 4 };
+#elif POLI_ARP
+static const int8_t XW_ORDER[NAV_XWIN] = { 0, XW_CARP, 5, 1, 2, 11, 8, 6, 7, 9, 10, 3, 4 };
+#else
+static const int8_t XW_ORDER[NAV_XWIN] = { 0, 5, 1, 2, 11, 8, 6, 7, 9, 10, 3, 4 };
+#endif
 static int xw_pos(int w) { int i; for (i = 0; i < NAV_XWIN; i++) if (XW_ORDER[i] == w) return i; return 0; }
 void poli_nav_select_turn(int steps)
 {
@@ -618,6 +637,22 @@ void poli_nav_select_turn(int steps)
 void poli_nav_select_press(void)
 {
     if (xw >= 0) {               /* Core2-FxSeq: SEL switches the window's feature on or off (not a preset edit) */
+#if POLI_PADREC
+        if (xw == XW_PADREC) {   /* PAD REC: SEL is one-level undo, not on/off (as on the Elite) */
+            xtra_padrec_undo();
+            msg = MSG_PAD_UNDO;
+            nav_gen++;
+            return;
+        }
+#endif
+#if POLI_ARP
+        if (xw == XW_CARP) {     /* CLASSIC ARP: SEL = the classic arp on / off */
+            xtra_carp_toggle();
+            msg = MSG_NONE;
+            nav_gen++;
+            return;
+        }
+#endif
         xtra_toggle(xw);
         msg = (((xw >= 2 && xw <= 4) || xw == 6) && xtra_on(xw) && xtra_c2() != 3) ? MSG_NO_C2 :
               (xw == 7 || xw == 8) ? (xtra_c2() != 3 ? MSG_NO_C2 : xtra_locked() ? MSG_LOCKED : MSG_GENERATED) :
@@ -702,9 +737,18 @@ void poli_nav_knob(int index, int steps)
     int kind;
     if (index < 0 || index > 3 || steps == 0) return;
     if (xw >= 0) {               /* Core2-FxSeq: K1..K4 of the ADDED window (not preset edits) */
-        steps = nav_accel(index, steps, xtra_hi(xw, index) - xtra_lo(xw, index));
+        if (!(xw == 1 && index == 1)   /* Seq64: SEQ STEPS 1..64 moves one per detent (every value, no skip) */
+#if POLI_ARP
+            && xw != XW_CARP            /* Parity: CLASSIC ARP GATE moves 5 % a detent, never faster */
+#endif
+            )
+            steps = nav_accel(index, steps, xtra_hi(xw, index) - xtra_lo(xw, index));
         xtra_knob(xw, index, steps);
         msg = MSG_NONE;
+#if POLI_PADREC
+        if (xw == XW_PADREC && index == 0 && !xtra_padrec_armed() && !xtra_padrec_slot_used(xtra_padrec_slot()))
+            msg = MSG_PAD_EMPTY;
+#endif
         nav_gen++;
         return;
     }
@@ -737,7 +781,11 @@ void poli_nav_knob(int index, int steps)
         steps = nav_accel(index, steps, nav_khi(kind) - nav_klo(kind));
     if (steps == 0) return;
     apply_kind(kind, steps);
+#if POLI_VALREPAINT
+    nav_val_gen++;               /* Parity: only a value moved; volt.c repaints the panel (or all, if the '*' changes) */
+#else
     nav_gen++;
+#endif
 }
 
 void poli_nav_octave(int dir)
@@ -770,6 +818,12 @@ void poli_nav_reserved(int m)
 }
 
 int poli_nav_lang(void) { return lang; }
+#if POLI_VALREPAINT
+uint32_t poli_nav_value_generation(void) { return nav_val_gen; }
+#endif
+#if POLI_EGPLOT
+int poli_nav_pos(int kind) { return (kind <= SLOT_EMPTY || kind >= SLOT_COUNT) ? 0 : (int)pos[kind]; }
+#endif
 uint32_t poli_nav_generation(void)
 {
     if (xw >= 0 && xtra_gen() != xgen_seen) {   /* Core2-FxSeq: an ADDED window repaints for its own changes only */
@@ -1029,9 +1083,15 @@ void poli_nav_midi(uint8_t status, uint8_t data1, uint8_t data2)
 {
     uint8_t st = (uint8_t)(status & 0xF0u);
     if (status >= 0xF8u) {         /* realtime: clock and transport, any channel (no engine effect before) */
+#if POLI_ARP
+        if (status == 0xF8u) { clk_tick(); poli_arp_clock(nav_now_ms); }   /* Parity: the classic arp, as on the Elite */
+        else if (status == 0xFAu) { clk_n = 0; clk_start = 1u; poli_arp_start(); }
+        else if (status == 0xFBu || status == 0xFCu) { clk_n = 0; if (status == 0xFBu) poli_arp_continue(); else poli_arp_stop(); }
+#else
         if (status == 0xF8u) clk_tick();
         else if (status == 0xFAu) { clk_n = 0; clk_start = 1u; }   /* Start: the next clock is beat 1 */
         else if (status == 0xFBu || status == 0xFCu) clk_n = 0;      /* Continue / Stop: new run, tempo held */
+#endif
         return;
     }
     /* Channel messages (notes, CC, pitch bend, pressure, program change,
@@ -1040,6 +1100,11 @@ void poli_nav_midi(uint8_t status, uint8_t data1, uint8_t data2)
     if (status < 0xF0u && (uint8_t)((status & 0x0Fu) + 1u) != midi_ch)
         return;
     polivoks_midi(status, data1, data2);
+#if POLI_ARP
+    /* the classic arp: CC 120, CC 123 and program change clear its gate, latch and held notes (as on the Elite) */
+    if (st == 0xC0u || (st == 0xB0u && (data1 == 120u || data1 == 123u)))
+        poli_arp_clear();
+#endif
     if (st == 0xB0u && data1 != 120u && data1 != 123u)
         poli_nav_cc(data1, data2);
 }

@@ -8,6 +8,7 @@
 #ifndef POLI_NAV_H
 #define POLI_NAV_H
 #include <stdint.h>
+#include "poli_feat.h"        /* Parity (23 Nov 2026): the feature switches */
 
 /* Logical voice order is the HOME roll, not this enum.
  * EDIT = OSC, LFO = modulator, FX = filter, ENV = amp, GLO = global. */
@@ -19,7 +20,10 @@ enum {
     NAV_SEC_GLOBAL = 4,
     NAV_SEC_XTRA = 5         /* Core2-FxSeq: the ADDED features (ARP, SEQ, DRUMS, DELAY, REVERB), not Polivoks */
 };
-enum { NAV_XWIN = 11 };   /* Drift-Full: + 8 GENERATE, 9 DRUM FX, 10 PERFORM */
+enum { NAV_XWIN = 12 + POLI_PADREC + POLI_ARP };   /* Drift-Full: + 8 GENERATE, 9 DRUM FX, 10 PERFORM; Drum-Step: + 11 DRUM STEP;
+                                                     Parity: + 12 PAD REC, 13 CLASSIC ARP */
+/* was: enum { NAV_XWIN = 12 }; */
+/* was: enum { NAV_XWIN = 11 }; */
 /* was: enum { NAV_XWIN = 8 }; */   /* Wander-Drift: 8 (ids 5 WANDER, 6 DRUM DRIFT, 7 GROOVE; poli_nav.c XW_ORDER) */
 enum { NAV_XWIN_C2 = 5 };       /* their windows: ARP, SEQ, DRUMS, DELAY, REVERB (flat 12..16, outside the HOME roll) */
 
@@ -58,6 +62,12 @@ enum {
     MSG_ARP, MSG_SEQ, MSG_PLAY, MSG_REC, MSG_SAVE, MSG_PRESETS,
     MSG_STOP, MSG_NO_C2, MSG_NEW_BEAT, MSG_NEED_PLAY, MSG_BREAK, MSG_BUILD, MSG_DROP, MSG_ARP_HOLD, MSG_ARP_FREE, MSG_LOCKED, MSG_GENERATED, MSG_RESTORE, MSG_LOCK_ON, MSG_LOCK_OFF      /* Core2-FxSeq: transport stopped; an effect needs the second core, which is not running */
 };
+#if POLI_PADREC
+enum { MSG_PAD_SAVED = MSG_LOCK_OFF + 1, MSG_PAD_EMPTY, MSG_PAD_UNDO, MSG_PAD_CLEARED, MSG_PAD_FAILED };
+#endif
+#if POLI_ARP
+enum { MSG_CARP_LATCH = MSG_LOCK_OFF + 6, MSG_CARP_FREE };   /* Parity: REC on CLASSIC ARP */
+#endif
 
 typedef struct {
     int section;              /* owner of the current window */
@@ -94,6 +104,12 @@ int poli_nav_xtra(void);                  /* -1 or the ADDED window shown */
 void poli_nav_view(poli_nav_view_t *v);
 int poli_nav_lang(void);
 uint32_t poli_nav_generation(void);
+#if POLI_VALREPAINT
+uint32_t poli_nav_value_generation(void); /* Parity: a knob moved a value only; the panel repaints, not the screen */
+#endif
+#if POLI_EGPLOT
+int poli_nav_pos(int kind);              /* current 7-bit pos[kind]; 0 if kind is out of range (the EG plots) */
+#endif
 /* preset hooks: 31 knob bytes (SLOT_CUT..SLOT_DUO, offset to 0..) + 1 switch byte */
 void poli_nav_patch_get(uint8_t k[31], uint8_t *sw);
 void poli_nav_patch_set(const uint8_t k[31], uint8_t sw);

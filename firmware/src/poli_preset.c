@@ -334,6 +334,9 @@ static void pv_say(int m)
 static void pv_set(const uint8_t k[31], uint8_t sw, const uint8_t *x)
 {
     pv_mute_on();                  /* silent before the first new value lands */
+#if POLI_ARP
+    poli_arp_clear();              /* Parity (as the Elite): a preset change clears the classic arp's set and LATCH */
+#endif
     poli_nav_patch_set(k, sw);
     poli_nav_patch_set_x(x);
     pv_mute_off();                 /* the next half fades in with the new sound */

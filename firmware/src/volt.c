@@ -31,6 +31,7 @@
  * Platform sources are the measurement platform plus crt0.S. This file is
  * the only application translation unit the link compiles.
  */
+#include "poli_feat.h"                          /* Parity (23 Nov 2026): PAD REC, classic arp, plots, analyser */
 #define APP_NAME "VOLT"
 #define STORE_MAGIC 0x544C4F56u
 static void app_idle(void);
@@ -82,6 +83,27 @@ static int pv_store_save(int which, const void *p, uint32_t n)
     fm1_wdt_feed();
     return which == 3 ? settings_save(p, n) : blob_save(pv_blob_of(which), p, n);
 }
+#if POLI_PADREC
+/* Parity (23 Nov 2026): PAD REC's 8 grooves in blob 0 (0xF4000), as on the Elite. Blob 0 is inside store.h's FM-1
+ * allow-list (0xF4000-0xFBFFF) and no other P-Vox code uses it (presets: 5..7). A load needs the store magic, the
+ * exact 408-byte length, the CRC and PAD REC's own "PVDR" v1 header, so anything else there is left alone. */
+#define PV_PADREC_BLOB 0u
+_Static_assert(BLOBS_AT + PV_PADREC_BLOB * 0x1000u == 0xF4000u && PV_PADREC_BLOB != PV_BLOB_A &&
+               PV_PADREC_BLOB != PV_BLOB_B && PV_PADREC_BLOB != PV_BLOB_BACKUP, "PAD REC blob");
+static int pv_padrec_flush(void)
+{
+    uint8_t buf[XT_PADREC_BLOB];
+    if (xtra_padrec_export(buf, sizeof buf) < 0) return -1;
+    fm1_wdt_feed();
+    return blob_save(PV_PADREC_BLOB, buf, sizeof buf);
+}
+static void pv_padrec_boot(void)
+{
+    uint8_t buf[XT_PADREC_BLOB];
+    if (blob_load(PV_PADREC_BLOB, buf, sizeof buf) == 0)
+        (void)xtra_padrec_import(buf, sizeof buf);
+}
+#endif
 /* Preset-load mute (out_mute.h, in platform.c's output stage): ask for
  * silence, wait until the audio ISR has faded a whole half to 0 (at most the
  * half in flight plus the fade half, 2 x 5.8 ms), then change the sound. The
@@ -157,10 +179,18 @@ static void light_section(const poli_nav_view_t *v)
     fm1_led_key(BTN_FX, !v->roll && v->section == NAV_SEC_FX);
     fm1_led_key(BTN_ENV, !v->roll && v->section == NAV_SEC_AMP);
     fm1_led_key(BTN_GLO, !v->roll && v->section == NAV_SEC_GLOBAL);
+#if POLI_ARP
+    fm1_led_key(BTN_ARP, xtra_on(0) || poli_arp_on());   /* Core2-FxSeq: on/off and transport lamps (Parity: either arp) */
+#else
     fm1_led_key(BTN_ARP, xtra_on(0));           /* Core2-FxSeq: on/off and transport lamps */
+#endif
     fm1_led_key(BTN_SEQ, xtra_on(1));
     fm1_led_key(BTN_PLAY, xtra_running());
+#if POLI_PADREC
+    fm1_led_key(BTN_REC, xtra_rec() || xtra_padrec_armed());
+#else
     fm1_led_key(BTN_REC, xtra_rec());
+#endif
 }
 
 static void service_controls(void)
@@ -211,18 +241,40 @@ static void service_controls(void)
         if (b & (1u << BTN_ENV)) poli_nav_section(NAV_SEC_AMP);
         if (b & (1u << BTN_GLO)) poli_nav_section(NAV_SEC_GLOBAL);
         if (b & (1u << BTN_SEL)) poli_nav_select_press();
+#if POLI_PADREC
+        if (b & (1u << BTN_SAVE)) {
+            if (poli_nav_xtra() == XW_PADREC) {   /* Parity: SAVE on PAD REC stores the groove in its slot (blob 0) */
+                if (xtra_padrec_save()) poli_nav_reserved(pv_padrec_flush() == 0 ? MSG_PAD_SAVED : MSG_PAD_FAILED);
+            } else
+                poli_preset_save_btn(fm1_ms);
+        }
+#else
         if (b & (1u << BTN_SAVE)) poli_preset_save_btn(fm1_ms);
+#endif
         e = fm1_enc_take(ENC_SELECT);
         if (e) poli_nav_select_turn(e);
     }
     /* Core2-FxSeq: ARP / SEQ open their ADDED window; pressed again there, switch it on or off (SEQ during REC
        writes a rest). PLAY starts / stops the transport. REC arms step recording and shows SEQ. */
     if (b & ((1u << BTN_ARP) | (1u << BTN_SEQ) | (1u << BTN_REC)) && pm != PV_MODE_NONE) poli_preset_cancel();
+    /* Parity (23 Nov 2026): ARP acts on the arp whose page is shown. On CLASSIC ARP it switches the classic arp on or
+       off; anywhere else it is as before (opens ARPEGGIO, there switches the EXTRAS arp). The Elite's long press is
+       not used: no timing, and the EXTRAS ARP never sees a press meant for the classic one. */
     if (b & (1u << BTN_ARP)) {
+#if POLI_ARP
+        if (poli_nav_xtra() == XW_CARP) poli_nav_select_press();
+        else
+#endif
         if (poli_nav_xtra() == 0) poli_nav_select_press();
         else poli_nav_xtra_open(0);
     }
     if (b & (1u << BTN_SEQ)) {
+#if POLI_PADREC
+        if (poli_nav_xtra() == XW_PADREC) {   /* Parity: SEQ on PAD REC clears the groove (SEL undoes it) */
+            xtra_padrec_clear();
+            poli_nav_reserved(MSG_PAD_CLEARED);
+        } else
+#endif
         if (xtra_rec()) xtra_rest();
         else if (poli_nav_xtra() == 1) poli_nav_select_press();
         else poli_nav_xtra_open(1);
@@ -232,6 +284,17 @@ static void service_controls(void)
         poli_nav_reserved(xtra_running() ? MSG_PLAY : MSG_STOP);
     }
     if (b & (1u << BTN_REC)) {
+#if POLI_PADREC
+        if (poli_nav_xtra() == XW_PADREC) {   /* Parity (as the Elite): REC on PAD REC arms a take (count-in / next bar) */
+            if (!xtra_padrec_rec(fm1_ms)) poli_nav_reserved(MSG_NO_C2);
+        } else
+#endif
+#if POLI_ARP
+        if (poli_nav_xtra() == XW_CARP) {     /* Parity: REC on CLASSIC ARP = LATCH on / off (as REC = HOLD on ARPEGGIO) */
+            poli_arp_latch_toggle();
+            poli_nav_reserved(poli_arp_latched() ? MSG_CARP_LATCH : MSG_CARP_FREE);
+        } else
+#endif
         if (poli_nav_xtra() == 0) {   /* Arp-Hold: REC on ARPEGGIO = ARP HOLD on / off */
             xtra_hold_toggle(fm1_ms);
             poli_nav_reserved(xtra_hold() ? MSG_ARP_HOLD : MSG_ARP_FREE);
@@ -269,6 +332,9 @@ static void service_controls(void)
 static void app_main(void)
 {
     uint32_t shown = 0, bt_ms = 0;
+#if POLI_VALREPAINT
+    uint32_t shown_val = 0;
+#endif
     poli_nav_view_t view;
 #ifdef DINGHY_HOST
     uint32_t announced = 0;
@@ -279,6 +345,9 @@ static void app_main(void)
 #endif
     poli_nav_init();
     poli_preset_init(fm1_ms);   /* boots into the last used slot (factory first boot: 01 Init) */
+#if POLI_PADREC
+    pv_padrec_boot();           /* Parity: PAD REC's grooves from blob 0; missing or foreign data stays empty */
+#endif
 #if POLI_BOOT_SCREEN && !defined(DINGHY_HOST)
     boot_run();                 /* the load screen; returns with the synth's audio IRQ unmasked again */
 #endif
@@ -292,7 +361,24 @@ static void app_main(void)
         midi_in();
         service_controls();
         /* Core2-FxSeq: the arpeggiator / step record take the keys; with both off this is fm1_in.notes */
+#if POLI_ARP
+        /* Parity: while the classic arp is on it takes the keys (as on the Elite), except where the keys have another
+           job: DRUM STEP, PAD REC and step record. Its clock runs every pass. */
+        poli_arp_page_show(poli_nav_xtra() == XW_CARP);
+        if (poli_arp_on() && !xtra_rec() && poli_nav_xtra() != 11
+#if POLI_PADREC
+            && poli_nav_xtra() != XW_PADREC
+#endif
+            ) {
+            (void)poli_arp_keys(fm1_in.notes, 0, fm1_ms);
+            polivoks_panel(xtra_keys(0u, polivoks_kb_oct(), fm1_ms), 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        } else {
+            poli_arp_poll(fm1_ms);
+            polivoks_panel(xtra_keys(fm1_in.notes, polivoks_kb_oct(), fm1_ms), 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        }
+#else
         polivoks_panel(xtra_keys(fm1_in.notes, polivoks_kb_oct(), fm1_ms), 0, 0, 0, 0, 0, 0, 0, 0, 0);
+#endif
         xtra_tick(fm1_ms);
         xf_service();
         poli_nav_view(&view);
@@ -308,12 +394,37 @@ static void app_main(void)
         idle_ok = 1;
         if (shown != poli_nav_generation()) {
             shown = poli_nav_generation();
+#if POLI_VALREPAINT
+            shown_val = poli_nav_value_generation();
+#endif
             poli_ui_draw();
-        } else if (fm1_ms - bt_ms >= 250u) {   /* block-timer test build: the readout, at most 4 times a second */
+        }
+#if POLI_VALREPAINT
+        else if (shown_val != poli_nav_value_generation()) {
+            /* Parity: a knob moved a value only. The panel repaints, unless the header must change too (the '*'
+               appears, or a preset message is up, which a turn clears, as before): then the whole screen */
+            shown_val = poli_nav_value_generation();
+            if (poli_ui_values_ok()) poli_ui_draw_values();
+            else {
+                poli_nav_touch();
+                shown = poli_nav_generation();
+                poli_ui_draw();
+            }
+        }
+#endif
+        else if (fm1_ms - bt_ms >= 250u) {   /* block-timer test build: the readout, at most 4 times a second */
             bt_ms = fm1_ms;
             if (poli_ui_bt_stale())
                 poli_ui_draw_bt();
         }
+#if POLI_EGPLOT
+        /* Parity (as the Elite): the AMP / filter envelope plots at ~25 Hz, main loop only */
+        poli_ui_ampenv_poll(fm1_ms);
+        poli_ui_filtenv_poll(fm1_ms);
+#endif
+#if POLI_SPECTRUM
+        poli_ui_spectrum_poll(fm1_ms);   /* the 24-bar footer at ~25 Hz from the main-loop audio snapshot */
+#endif
         idle_ok = 0;
         poli_preset_tick(fm1_ms);
         (void)inst_sel;

@@ -12,7 +12,8 @@
  *        RANDOM, ORDER (as pressed); 1..3 octaves; RATE 1/4..1/32 with triplets; GATE 5..100 % (100 = legato,
  *        no new attack). The first key sounds at once. While it is on, the keys do not play the voice
  *        directly. Notes reach the voice through polivoks_midi, as a MIDI note would.
- * SEQ    16 steps, each a note or a rest; STEPS 1..16, RATE, GATE. REC (button) writes keys or MIDI notes at
+ * SEQ    64 steps (Seq64, 22 Nov 2026; was 16), each a note or a rest; STEPS 1..64 (every value, one per knob
+ *        detent, no acceleration), RATE, GATE. REC (button) writes keys or MIDI notes at
  *        the cursor and steps on; SEQ pressed during REC writes a rest. Mono: a key held while it plays
  *        takes the voice (the panel's last word, as before); MIDI notes too.
  * DRUMS  8 built-in 16-step patterns, kick / snare / hat, one step per 1/16 while the transport runs. The
@@ -26,9 +27,11 @@
 xf_par_t xf_par;                           /* main writes, core 1 reads */
 xf_stat_t xf_st;                           /* core 1 writes, main reads */
 
-enum { XW_ARP = 0, XW_SEQ, XW_DRUM, XW_DLY, XW_REV, XW_WAND, XW_DRIFT, XW_GROOVE, XW_GEN, XW_DFX, XW_PERF, XW_N };
-/* (Wander-Drift: 5..7; Drift-Full: 8 GENERATE, 9 DRUM FX, 10 PERFORM) */
-enum { XT_SEQ_N = 16, XT_HELD_N = 12 };
+enum { XW_ARP = 0, XW_SEQ, XW_DRUM, XW_DLY, XW_REV, XW_WAND, XW_DRIFT, XW_GROOVE, XW_GEN, XW_DFX, XW_PERF, XW_STEP, XW_N };
+/* (Wander-Drift: 5..7; Drift-Full: 8 GENERATE, 9 DRUM FX, 10 PERFORM; Drum-Step: 11 DRUM STEP; Parity: PAD REC is
+ * 12 and CLASSIC ARP 13, poli_xtra.h) */
+enum { XT_SEQ_N = 64, XT_HELD_N = 12 };       /* Seq64 (22 Nov 2026): 64 sequencer steps (was 16) */
+enum { XT_SEQ_DEF_N = 16 };                    /* the power-on pattern's steps; 17..64 start as rests */
 static const uint8_t XT_RATE_CLK[7] = { 24, 16, 12, 8, 6, 4, 3 };              /* 1/4 1/4T 1/8 1/8T 1/16 1/16T 1/32 */
 static const uint8_t XT_DLY_CLK[11] = { 3, 4, 6, 8, 9, 12, 16, 18, 24, 36, 48 }; /* 1/32 1/16T 1/16 1/8T 1/16D 1/8 1/4T 1/8D 1/4 1/4D 1/2 */
 /* Wander-Drift: ARP MODE 5 WANDER, 6 FROM SEQ; DRUMS PATTERN 0..28 (1-8, USER, 5 genre packs of 4); WANDER
@@ -42,13 +45,14 @@ static const uint8_t XT_DLY_CLK[11] = { 3, 4, 6, 8, 9, 12, 16, 18, 24, 36, 48 };
 #define XT_BPM_MAX 190
 static const int16_t XT_LO[XW_N][4] = { {0, 0, 1, 1}, {XT_BPM_MIN, 1, 0, 1}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0},
                                         {0, 0, 0, 0}, {0, 0, 0, 0}, {50, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0},
-                                        {0, 0, 0, 0} };
-static const int16_t XT_HI[XW_N][4] = { {6, 6, 3, 20}, {XT_BPM_MAX, 16, 6, 20}, {56, 127, 127, 127}, {10, 127, 127, 127},
+                                        {0, 0, 0, 0}, {0, 0, 0, 0} };
+static const int16_t XT_HI[XW_N][4] = { {6, 6, 3, 20}, {XT_BPM_MAX, XT_SEQ_N, 6, 20}, {56, 127, 127, 127}, {10, 127, 127, 127},
                                         {127, 127, 0, 127}, {127, 127, 127, 127}, {3, 5, 2, 9}, {75, 4, 2, 8},
-                                        {4, 4, 127, 1}, {127, 127, 127, 127}, {2, 5, 5, 2} };
+                                        {4, 4, 127, 1}, {127, 127, 127, 127}, {2, 5, 5, 2},
+                                        {15, 3, 1, 0} };   /* Drum-Step: K3/K7 PLAY GEN 0..1 (K4/K8 empty) */
 static const int16_t XT_DEF[XW_N][4] = { {0, 4, 1, 10}, {120, 16, 4, 10}, {0, 90, 64, 64}, {7, 50, 80, 70},
                                          {80, 60, 0, 90}, {40, 20, 10, 30}, {1, 2, 1, 8}, {50, 2, 1, 0},
-                                         {0, 2, 32, 0}, {0, 64, 0, 40}, {0, 1, 0, 0} };
+                                         {0, 2, 32, 0}, {0, 64, 0, 40}, {0, 1, 0, 0}, {0, 0, 0, 0} };
 /* the drum patterns (Wander-Drift): 17 lanes, bit i = step i (1/16); tools/gen_poli_drums.py writes the table */
 typedef struct { uint16_t l[17]; uint8_t kit, lng; uint32_t roll; uint32_t bell[2]; } xt_pat_t;
 enum { L_KICK = 0, L_SNARE, L_GHOST, L_CLAP, L_CH, L_OH, L_LT, L_MT, L_HT, L_RIM, L_COWB, L_CLAVE, L_LC, L_MC, L_HC,
@@ -58,7 +62,7 @@ enum { XT_PAT_N = XT_PAT_ROM + 1, XT_PAT_USER = 8 };   /* the knob: 1-8, USER (9
 #define XT_PACK  12                            /* Drums12: patterns per genre pack */
 #define XT_PACKS 4                             /* HOUSE, DUBST, DNB, TECHNO */
 _Static_assert(XT_PAT_ROM == 8 + XT_PACKS * XT_PACK, "poli_drum_pat.inc must match the 12-per-pack knob");
-static const uint8_t XT_SEQ_DEF[XT_SEQ_N] = { 41, 41, 53, 41, 255, 41, 48, 51, 41, 41, 53, 41, 46, 255, 48, 44 };
+static const uint8_t XT_SEQ_DEF[XT_SEQ_DEF_N] = { 41, 41, 53, 41, 255, 41, 48, 51, 41, 41, 53, 41, 46, 255, 48, 44 };
 
 static struct {
     uint8_t on[XW_N];
@@ -103,14 +107,79 @@ static struct {
      * steps never change) and the MIDI notes it took (their note-offs are taken too) */
     int16_t tr;
     uint32_t tr_mid[4];
+    /* Drum-Step (22 Nov 2026): the USER slot's chance per hit, 2 bits a step (0 = 100 %, 1 = 75, 2 = 50, 3 = 25 %),
+     * by position (a hit the Drift moves takes its new cell's chance); the voice last touched on DRUM STEP (0..15) */
+    uint32_t chance[17];
+    uint8_t st_voice;
+    uint8_t wp_gen, wp_style;            /* PLAY GEN: temp live beat (fits in the tail after st_voice) */
 } xt XT_KEEP;
 xf_patch_t xf_patch[XF_DI] XT_KEEP;
+#if POLI_PADREC
+void xtra_padrec_follow_user(void);              /* poli_padrec.inc (end of this file) */
+#endif
+#if POLI_ARP
+void xtra_carp_toggle(void);                     /* (end of this file) */
+#endif
 
 /* ---- settings */
+#if POLI_PADREC || POLI_ARP
+/* Parity (23 Nov 2026): PAD REC (12) and CLASSIC ARP (13) keep their settings in their own modules */
+#if POLI_ARP
+static int xt_carp_lo(int i);
+static int xt_carp_hi(int i);
+static int xt_carp_get(int i);
+#endif
+int xtra_lo(int w, int i)
+{
+#if POLI_PADREC
+    if (w == XW_PADREC) return xtra_padrec_lo(i);
+#endif
+#if POLI_ARP
+    if (w == XW_CARP) return xt_carp_lo(i);
+#endif
+    return (w < 0 || w >= XW_N || i < 0 || i > 3) ? 0 : XT_LO[w][i];
+}
+int xtra_hi(int w, int i)
+{
+#if POLI_PADREC
+    if (w == XW_PADREC) return xtra_padrec_hi(i);
+#endif
+#if POLI_ARP
+    if (w == XW_CARP) return xt_carp_hi(i);
+#endif
+    return (w < 0 || w >= XW_N || i < 0 || i > 3) ? 0 : XT_HI[w][i];
+}
+static int xt_step_chance_now(void);
+int xtra_get(int w, int i)
+{
+    if (w == XW_STEP && i == 1) return xt_step_chance_now();   /* Drum-Step: CHANCE shows the cell's, live */
+#if POLI_PADREC
+    if (w == XW_PADREC) return xtra_padrec_get(i);
+#endif
+#if POLI_ARP
+    if (w == XW_CARP) return xt_carp_get(i);
+#endif
+    return (w < 0 || w >= XW_N || i < 0 || i > 3) ? 0 : xt.k[w][i];
+}
+#else
 int xtra_lo(int w, int i) { return (w < 0 || w >= XW_N || i < 0 || i > 3) ? 0 : XT_LO[w][i]; }
 int xtra_hi(int w, int i) { return (w < 0 || w >= XW_N || i < 0 || i > 3) ? 0 : XT_HI[w][i]; }
-int xtra_get(int w, int i) { return (w < 0 || w >= XW_N || i < 0 || i > 3) ? 0 : xt.k[w][i]; }
-int xtra_on(int w) { return (w < 0 || w >= XW_N) ? 0 : xt.on[w]; }
+static int xt_step_chance_now(void);
+int xtra_get(int w, int i)
+{
+    if (w == XW_STEP && i == 1) return xt_step_chance_now();   /* Drum-Step: CHANCE shows the cell's, live */
+    return (w < 0 || w >= XW_N || i < 0 || i > 3) ? 0 : xt.k[w][i];
+}
+#endif
+#if POLI_ARP
+int xtra_on(int w)
+{
+    if (w == XW_CARP) return poli_arp_on();      /* Parity: the CLASSIC ARP page shows the classic arp's on / off */
+    return (w < 0 || w >= XW_N) ? 0 : xt.on[w == XW_STEP ? XW_DRUM : w];
+}
+#else
+int xtra_on(int w) { return (w < 0 || w >= XW_N) ? 0 : xt.on[w == XW_STEP ? XW_DRUM : w]; }   /* (DRUM STEP: DRUMS') */
+#endif
 int xtra_running(void) { return xt.run; }
 int xtra_rec(void) { return xt.rec; }
 int xtra_rec_cur(void) { return xt.rec_cur; }
@@ -475,12 +544,13 @@ static int xt_wlist(uint8_t *s, uint8_t cnt[5][5])
     int n = 0, i, j, k, oct = xt.k[XW_ARP][2], fs = xt.k[XW_ARP][0] == 6;
     uint8_t q;
     if (fs) {
-        int lo = 127, hl = 127, steps = xt.k[XW_SEQ][1], prev = -1, pm = 0, r[XT_SEQ_N], nr = 0, tr;
+        int lo = 127, hl = 127, steps = xt.k[XW_SEQ][1], prev = -1, pm = 0, nr = 0, tr;
+        uint8_t r[XT_SEQ_N];                     /* Seq64: ranks (< 48) of the steps' notes */
         for (i = 0; i < steps; i++) {
             q = xt.seq[i];
             if (q == 255u) continue;
             for (j = 0; j < n && s[j] != q; j++) { }
-            if (j == n && n < XT_SEQ_N) s[n++] = q;
+            if (j == n && n < 48) s[n++] = q;    /* Seq64: s[] holds 48 (more distinct notes than that: dropped) */
             if (q < lo) lo = q;
         }
         for (i = 0; i < xt.nheld; i++) if (xt.held[i] < hl) hl = xt.held[i];
@@ -488,7 +558,10 @@ static int xt_wlist(uint8_t *s, uint8_t cnt[5][5])
         for (j = 1; j < n; j++) for (k = j; k > 0 && s[k - 1] > s[k]; k--) { q = s[k]; s[k] = s[k - 1]; s[k - 1] = q; }
         if (cnt) {                               /* the sequence's moves, by rank, around its loop */
             memset(cnt, 0, 25);
-            for (i = 0; i < steps; i++) if (xt.seq[i] != 255u) { for (j = 0; s[j] != xt.seq[i]; j++) { } r[nr++] = j; }
+            for (i = 0; i < steps; i++) if (xt.seq[i] != 255u) {
+                for (j = 0; j < n && s[j] != xt.seq[i]; j++) { }
+                if (j < n) r[nr++] = (uint8_t)j;   /* (a dropped note is not counted) */
+            }
             for (i = 0; i < nr && nr > 1; i++) {
                 int m = xt_wmove(r[(i + 1) % nr] - r[i]);
                 if (prev >= 0 && cnt[pm][m] < 15u) cnt[pm][m]++;
@@ -670,6 +743,7 @@ static int xt_pack(int p) { return p > XT_PAT_USER ? (p - 9) / XT_PACK : -1; }
 static int xt_genre(void)
 {
     int p = xt.wp_src;
+    if (xt.wp_gen) return xt.wp_style;   /* PLAY GEN: KIT AUTO / trim caps follow the generated style */
     return p == XT_PAT_USER ? xt.user_style : p > XT_PAT_USER ? 1 + (p - 9) / XT_PACK : 0;
 }
 static int xt_flavour(void)
@@ -769,6 +843,9 @@ static void xt_drum_fire(uint32_t m, uint32_t st)
     if (m & (1u << L_CH)) xf_par.drm_trig[2]++;
     for (l = 0; l < 17u; l++)
         if ((m >> l) & 1u) {
+#if POLI_PADREC
+            if (xtra_padrec_skip_lane((int)l, (int)st)) continue;   /* (a take: the hit just played live) */
+#endif
             uint32_t in = map[l], pm = 4096u, vel = XT_LANE_VEL[l];
             if (l == L_KICK) { if (xt.wp.lng && f == KF_808) in = DI_BDL8; pm = XT_KF_KPM[f]; }
             if (l == L_COWB) pm = XT_SEMI_Q12[(xt.wp.bell[st >> 3] >> (4u * (st & 7u))) & 15u];
@@ -781,6 +858,7 @@ static void xt_load_wp(void)
     xt.wp = *xt_pat(xt.k[XW_DRUM][0]);
     xt.wp_src = (uint8_t)xt.k[XW_DRUM][0];
     xt.reload = 0;
+    xt.wp_gen = 0;                       /* PLAY GEN: a real load replaces the temporary beat */
 }
 /* the patterns RANDOM / NEXT choose from: POOL 0..6 = 1-2 .. 1-8, 7 = 1-9 (with USER), 8 STYLE (the current
  * pattern's own group: 1-8, or its genre pack's 12), 9 ALL */
@@ -1029,6 +1107,25 @@ static void xt_bar_start(uint32_t bar)
     }
     xt.gen++;
 }
+/* Drum-Step: the chance of the USER pattern's own hits at step st (the fill / build / HAT BUSY additions and the
+ * drop's crash always play). A hit at 75 / 50 / 25 % draws from the drums' own random numbers and stays if the
+ * draw (0..3) is below 4 - level; a 100 % hit draws nothing, so a pattern with no chance set plays as before. A
+ * closed hat left out takes its roll with it. */
+static uint32_t xt_chance(uint32_t m, uint32_t st, uint8_t *roll)
+{
+    uint32_t l, b = 1u << st, sh = 2u * st;
+    if (xt.wp_src != XT_PAT_USER || xt.brk) return m;
+    if (xt.wp_gen) return m;             /* PLAY GEN: the temp beat is 100 %; USER chance stays on USER */
+    for (l = 0; l < 17u; l++) {
+        uint32_t c = (xt.chance[l] >> sh) & 3u;
+        if (!c || !((m >> l) & 1u) || !(xt.wp.l[l] & b) || (l == L_CRASH && st == 0u && xt.crash_next)) continue;
+        if ((uint32_t)xt_drndn(4) >= 4u - c) {
+            m &= ~(1u << l);
+            if (l == L_CH) *roll = 0;
+        }
+    }
+    return m;
+}
 static void xt_drum_step(uint32_t st, uint32_t tick, uint32_t now)
 {
     uint8_t roll;
@@ -1039,6 +1136,7 @@ static void xt_drum_step(uint32_t st, uint32_t tick, uint32_t now)
     xt.drum_pos = (uint8_t)st;
     if (!(xt.on[XW_DRUM] && xt.c2 == 3)) { xt.roll_cur = 0; return; }
     m = xt_step_lanes(st, &roll);
+    m = xt_chance(m, st, &roll);                 /* Drum-Step: USER hits below 100 % (none set: no draw, no change) */
     if (xt_swung_tick(tick) && m) {              /* swing: this 16th waits; its roll plays as one hit */
         xt.sw_d_mask = m; xt.sw_d_st = (uint8_t)st; xt.sw_d_due = now + xt_swing_ms(); xt.sw_d_pend = 1;
         xt.roll_cur = 0;
@@ -1081,61 +1179,71 @@ void xtra_restore(void)
 /* GENERATE (SEL on GENERATE or GROOVE): a beat from our own genre rules into the 9th slot (USER; 1-8 and the packs
  * never change), heard from the next beat (at once when stopped). STYLE AUTO = the playing pattern's genre (house
  * for 1-8). DENSITY sets the hats and the extras; the genre's caps still hold. LOCK refuses (returns 0). */
-static void xt_generate_into_user(int style)
+static int xt_generate_into(xt_pat_t *dst, int style)
 {
     static const uint16_t HAT[5] = { 0x1111, 0x4444, 0x5555, 0xDDDD, 0xFFFF };
-    xt_pat_t *u = &xt.user;
-    int d = xt.k[XW_GEN][1], i;
+    int d = xt.k[XW_GEN][1], i, into_user = (dst == &xt.user);
     if (style < 0) style = xt.k[XW_GEN][0];
     if (style == 0) { style = xt_genre(); if (style == 0) style = 1; }
-    memset(u, 0, sizeof *u);
+    memset(dst, 0, sizeof *dst);
+    if (into_user) memset(xt.chance, 0, sizeof xt.chance);      /* Drum-Step: a new USER beat, every hit 100 % */
     switch (style) {
     case 2:                                      /* dubstep: half time, snare + clap on beat 3 */
-        u->l[L_KICK] = (uint16_t)(0x0001u | 1u << (6 + 4 * xt_drndn(2)) | ((xt_drnd() & 1u) ? 0x0800u : 0u));
-        u->l[L_SNARE] = 0x0100; u->l[L_CLAP] = 0x0100;
-        u->l[L_CH] = (uint16_t)(d >= 3 ? 0x5555u : d >= 1 ? 0x1111u | 0x4040u : 0x1111u);
-        if (xt_drnd() & 1u) u->l[L_GHOST] = 0x4000;
-        if (d >= 2 && (xt_drnd() & 1u)) u->l[L_OH] = 0x0040;
-        if (d >= 3 && (xt_drnd() & 1u)) { u->l[L_HT] = 0x2000; u->l[L_LT] = 0x8000; }
-        u->kit = 1;
+        dst->l[L_KICK] = (uint16_t)(0x0001u | 1u << (6 + 4 * xt_drndn(2)) | ((xt_drnd() & 1u) ? 0x0800u : 0u));
+        dst->l[L_SNARE] = 0x0100; dst->l[L_CLAP] = 0x0100;
+        dst->l[L_CH] = (uint16_t)(d >= 3 ? 0x5555u : d >= 1 ? 0x1111u | 0x4040u : 0x1111u);
+        if (xt_drnd() & 1u) dst->l[L_GHOST] = 0x4000;
+        if (d >= 2 && (xt_drnd() & 1u)) dst->l[L_OH] = 0x0040;
+        if (d >= 3 && (xt_drnd() & 1u)) { dst->l[L_HT] = 0x2000; dst->l[L_LT] = 0x8000; }
+        dst->kit = 1;
         break;
     case 3:                                      /* DnB: two-step kick, snare 2 and 4 */
-        u->l[L_KICK] = (uint16_t)(0x0401u | ((xt_drnd() & 1u) ? 1u << (xt_drnd() & 1u ? 7 : 9) : 0u));
-        u->l[L_SNARE] = 0x1010;
-        u->l[L_CH] = HAT[d < 2 ? 2 : d];
-        for (i = 0; i < 1 + d / 2; i++) { static const uint8_t GH[6] = { 2, 7, 9, 11, 14, 15 }; u->l[L_GHOST] |= (uint16_t)(1u << GH[xt_drndn(6)]); }
-        if (xt_drnd() & 1u) { u->l[L_RIDE] = 0x5555; u->l[L_CH] = 0; }
-        u->kit = 1;
+        dst->l[L_KICK] = (uint16_t)(0x0401u | ((xt_drnd() & 1u) ? 1u << (xt_drnd() & 1u ? 7 : 9) : 0u));
+        dst->l[L_SNARE] = 0x1010;
+        dst->l[L_CH] = HAT[d < 2 ? 2 : d];
+        for (i = 0; i < 1 + d / 2; i++) { static const uint8_t GH[6] = { 2, 7, 9, 11, 14, 15 }; dst->l[L_GHOST] |= (uint16_t)(1u << GH[xt_drndn(6)]); }
+        if (xt_drnd() & 1u) { dst->l[L_RIDE] = 0x5555; dst->l[L_CH] = 0; }
+        dst->kit = 1;
         break;
     case 4:                                      /* techno (Drums12): four on the floor, clap 2 and 4, off-beat open hats */
-        u->l[L_KICK] = 0x1111; u->l[L_CLAP] = 0x1010;
-        u->l[L_OH] = 0x4444;
-        u->l[L_CH] = (uint16_t)(HAT[d] & ~0x4444u);
-        if (d >= 2) { if (xt_drnd() & 1u) u->l[L_RIDE] = 0x5555; else u->l[L_RIM] = (uint16_t)(1u << (3 + 4 * xt_drndn(4))); }
-        u->kit = 1;
+        dst->l[L_KICK] = 0x1111; dst->l[L_CLAP] = 0x1010;
+        dst->l[L_OH] = 0x4444;
+        dst->l[L_CH] = (uint16_t)(HAT[d] & ~0x4444u);
+        if (d >= 2) { if (xt_drnd() & 1u) dst->l[L_RIDE] = 0x5555; else dst->l[L_RIM] = (uint16_t)(1u << (3 + 4 * xt_drndn(4))); }
+        dst->kit = 1;
         break;
     default:                                     /* house: four on the floor, clap 2 and 4, open hats on the off-beats */
-        u->l[L_KICK] = 0x1111; u->l[L_CLAP] = 0x1010;
-        u->l[L_OH] = 0x4444;
-        u->l[L_CH] = (uint16_t)(HAT[d] & ~0x4444u);
-        if (xt_drnd() & 1u) { static const uint8_t GH[4] = { 3, 7, 11, 15 }; u->l[L_GHOST] = (uint16_t)(1u << GH[xt_drndn(4)]); }
-        if (d >= 2) for (i = 0; i < d; i++) { static const uint8_t PL[4] = { L_LC, L_MC, L_HC, L_RIM }; u->l[PL[xt_drndn(4)]] |= (uint16_t)(1u << xt_drndn(16)); }
-        if ((xt_drnd() & 3u) == 0u) u->l[L_RIDE] = 0x4444 & ~u->l[L_OH];
-        u->kit = 1;
+        dst->l[L_KICK] = 0x1111; dst->l[L_CLAP] = 0x1010;
+        dst->l[L_OH] = 0x4444;
+        dst->l[L_CH] = (uint16_t)(HAT[d] & ~0x4444u);
+        if (xt_drnd() & 1u) { static const uint8_t GH[4] = { 3, 7, 11, 15 }; dst->l[L_GHOST] = (uint16_t)(1u << GH[xt_drndn(4)]); }
+        if (d >= 2) for (i = 0; i < d; i++) { static const uint8_t PL[4] = { L_LC, L_MC, L_HC, L_RIM }; dst->l[PL[xt_drndn(4)]] |= (uint16_t)(1u << xt_drndn(16)); }
+        if ((xt_drnd() & 3u) == 0u) dst->l[L_RIDE] = 0x4444 & ~dst->l[L_OH];
+        dst->kit = 1;
         style = 1;
         break;
     }
-    xt.user_style = (uint8_t)style;
+    if (into_user) xt.user_style = (uint8_t)style;
     {   /* the caps of its genre */
         xt_pat_t keep = xt.wp;
         uint8_t ks = xt.wp_src;
-        xt.wp = *u; xt.wp_src = XT_PAT_USER;
+        uint8_t gkeep = xt.wp_gen, skeep = xt.wp_style;
+        xt.wp = *dst;
+        if (into_user) xt.wp_src = XT_PAT_USER;
+        else { xt.wp_gen = 1; xt.wp_style = (uint8_t)style; }
         xt_trim();
-        *u = xt.wp;
+        *dst = xt.wp;
         xt.wp = keep; xt.wp_src = ks;
+        xt.wp_gen = gkeep; xt.wp_style = skeep;
     }
-    xt.gens++;
+    if (into_user) xt.gens++;
+    return style;
 }
+static void xt_generate_into_user(int style)
+{
+    (void)xt_generate_into(&xt.user, style);
+}
+
 int xtra_generate(void)
 {
     if (xt_locked()) return 0;
@@ -1177,6 +1285,9 @@ static void xt_clock(uint32_t now)
     if (!xt.run && xt.ticks_total % 6u == 0u) {  /* Drift-Full: 16ths for the gates and REPEAT, transport stopped */
         xf_par.s16 = xt.ticks_total / 6u;
         if (xt.rep_pend) { xt.rep_pend = 0; xt.perf_bits |= 1u; }
+#if POLI_PADREC
+        xtra_padrec_sixteenth(now, (xt.ticks_total / 6u) % 16u, 0);
+#endif
     }
     if (xt_arp_live()) {
         if (++xt.arp_cnt >= XT_RATE_CLK[xt.k[XW_ARP][1]]) {
@@ -1198,6 +1309,9 @@ static void xt_clock(uint32_t now)
             xf_par.s16 = xt.tick_n / 6u;         /* Drift-Full: the 16th for the gates; a REPEAT starts on it */
             if (xt.rep_pend) { xt.rep_pend = 0; xt.perf_bits |= 1u; }
             xt_drum_step((xt.tick_n / 6u) % 16u, xt.tick_n, now);
+#if POLI_PADREC
+            xtra_padrec_sixteenth(now, (xt.tick_n / 6u) % 16u, 1);
+#endif
         } else if (xt.roll_cur && xt.on[XW_DRUM] && xt.c2 == 3 && (xt_audible() >> L_CH & 1u) &&
                  (xt.roll_cur == 1 ? ph == 3u : (ph == 2u || ph == 4u)))   /* hat rolls: 32nds, or a triplet */
             xt_hit(XT_KF_LANE[xt_flavour()][L_CH], 90u, 4096u);
@@ -1233,7 +1347,19 @@ void xtra_transport(int run)
             xt.arp_cnt = (uint32_t)XT_RATE_CLK[xt.k[XW_ARP][1]] - 1u;
             xt.arp_i = 0;
         }
+        /* PLAY GEN (DRUM STEP i=2: K3 on the FM-1, K7 on the Elite): a fresh loop into the playing copy only.
+         * USER, chance, PATTERN and PAD REC stay put. LOCK and an armed PAD REC skip it. */
+        if (xt.k[XW_STEP][2] && !xt_locked() && !xtra_padrec_armed()) {
+            int st;
+            xt.wp_gen = 0;                       /* AUTO STYLE follows the programmed pattern, not a leftover beat */
+            st = xt_generate_into(&xt.wp, -1);
+            xt.wp_gen = 1;
+            xt.wp_style = (uint8_t)st;
+            xt.reload = 0;
+            xt.wp_src = (uint8_t)xt.k[XW_DRUM][0];
+        }
     } else {
+        if (xt.wp_gen) { xt.wp_gen = 0; xt_load_wp(); }   /* STOP: the programmed pattern back at once */
         xt_off(&xt.seq_note);
         xt.seq_off_pend = 0;
         xt_tr_reset();                           /* Drums12-Transpose: STOP */
@@ -1263,6 +1389,9 @@ void xtra_tick(uint32_t now)
     xt_swing_due(now, 0);
     if (xt.arp_off_pend && (int32_t)(now - xt.arp_off_ms) >= 0) { xt_off(&xt.arp_note); xt.arp_off_pend = 0; }
     if (xt.seq_off_pend && (int32_t)(now - xt.seq_off_ms) >= 0) { xt_off(&xt.seq_note); xt.seq_off_pend = 0; }
+#if POLI_PADREC
+    xtra_padrec_poll(now);
+#endif
     xtra_push();
 }
 
@@ -1368,12 +1497,45 @@ uint32_t xtra_perf_bits(void) { return xt.perf_bits | (xt.rep_pend ? 1u : 0u); }
 int xtra_fill_hold(void) { return xt.fill_hold; }
 /* REC held on DRUMS or PERFORM: FILL while it is down */
 void xtra_fill_button(int down) { uint8_t v = (uint8_t)(down ? 2u : 0u); if (v != xt.fill_hold) { xt.fill_hold = v; xt.gen++; } }   /* (2: the button) */
+static void xt_step_keys(uint32_t pressed, uint32_t released, int kb_oct, uint32_t now);   /* Drum-Step (below) */
 /* the keybed, every pass: returns the keys the voice should see (none while ARP takes them or REC writes) */
+#if POLI_PADREC
+static void xt_step_keys(uint32_t pressed, uint32_t released, int kb_oct, uint32_t now);
+int xtra_step_white(int k);
+int xtra_step_lane(int v);
+/* Parity (23 Nov 2026): the FM-1's pads are DRUM STEP's 16 white keys, F3 up (kick, snare, clap, closed hat, open
+ * hat, low / mid / high tom, rim, cowbell, clave, low / mid / high conga, ride, crash); a press is a pad hit, a
+ * release lets the pad go (hold 500 ms = erase the lane). Black keys do nothing. Keys let go here that were down
+ * before the page opened end as on DRUM STEP. */
+static void xt_padrec_keys(uint32_t pressed, uint32_t released, int kb_oct, uint32_t now)
+{
+    uint32_t k;
+    for (k = 0; k < 27u; k++) {
+        int v = xtra_step_white((int)k), pad;
+        if (v < 0 || !((pressed | released) & (1u << k))) continue;
+        pad = xtra_padrec_pad_of_lane(xtra_step_lane(v));
+        if (pad < 0) continue;
+        if (released & (1u << k)) xtra_padrec_pad(pad, 0, now);
+        if (pressed & (1u << k)) xtra_padrec_pad(pad, 127, now);
+    }
+    xt_step_keys(0u, released, kb_oct, now);
+}
+#endif
 uint32_t xtra_keys(uint32_t keys, int kb_oct, uint32_t now)
 {
     uint32_t pressed = keys & ~xt.prev_keys, released = xt.prev_keys & ~keys, k, old = xt.prev_keys;
     int was = xt.nheld;
     xt.prev_keys = keys;
+    if (poli_nav_xtra() == XW_STEP) {             /* Drum-Step: the white keys toggle the voices; nothing reaches the voice */
+        xt_step_keys(pressed, released, kb_oct, now);
+        return 0;
+    }
+#if POLI_PADREC
+    if (poli_nav_xtra() == XW_PADREC) {           /* Parity: PAD REC, the white keys are the pads; nothing reaches the voice */
+        xt_padrec_keys(pressed, released, kb_oct, now);
+        return 0;
+    }
+#endif
     if (xt.on[XW_PERF] && !xt.rec) { xt_fx_keys(pressed, released); return 0; }   /* Drift-Full: KEYS = PERFORM */
     if (xt.rec) {
         for (k = 0; k < 27u; k++) {
@@ -1415,12 +1577,132 @@ uint32_t xtra_keys(uint32_t keys, int kb_oct, uint32_t now)
     return 0;
 }
 
+/* ---- Drum-Step (22 Nov 2026): the DRUM STEP page. K1 STEP = the cursor (1..16), K2 CHANCE = the chance of the
+ * last-touched voice's hit at the cursor (100 / 75 / 50 / 25 %). The 16 white keys, fixed (OCT does not move them),
+ * left to right: kick, snare, clap, closed hat, open hat, low / mid / high tom, rim, cowbell, clave, low / mid /
+ * high conga, ride, crash (no ghost snare). A press toggles that voice at the cursor. The first edit of a pattern
+ * other than USER copies it (its genre too) into USER and PATTERN goes to USER. An edit goes into USER and into the
+ * playing copy at once; the Drift, fills and HAT BUSY still only touch the playing copy, RESTORE / LOCK as before. */
+static const uint8_t XT_STEP_LANE[16] = { L_KICK, L_SNARE, L_CLAP, L_CH, L_OH, L_LT, L_MT, L_HT, L_RIM, L_COWB,
+                                          L_CLAVE, L_LC, L_MC, L_HC, L_RIDE, L_CRASH };
+/* keybed key k (0 = the lowest F) -> voice 0..15, or -1 for a black key or the key past the 16th white */
+int xtra_step_white(int k)
+{
+    static const int8_t W[12] = { 0, -1, 1, -1, 2, -1, 3, 4, -1, 5, -1, 6 };   /* F G A B C D E */
+    int v;
+    if (k < 0 || k > 26 || W[k % 12] < 0) return -1;
+    v = (k / 12) * 7 + W[k % 12];
+    return v < 16 ? v : -1;
+}
+int xtra_step_lane(int v) { return (v < 0 || v > 15) ? -1 : XT_STEP_LANE[v]; }
+int xtra_step_voice(void) { return xt.st_voice; }
+int xtra_chance(int l, int st) { return (l < 0 || l > 16 || st < 0 || st > 15) ? 0 : (int)((xt.chance[l] >> (2 * st)) & 3u); }
+/* the pattern the page shows and edits: the programmed one (PATTERN), not the Drift's playing copy */
+static const xt_pat_t *xt_step_src(void) { return xt_pat(xt.k[XW_DRUM][0]); }
+/* voice v at step st: bit 0 = a hit, bits 1-2 = its chance level (USER only) */
+int xtra_step_cell(int v, int st)
+{
+    int l = xtra_step_lane(v);
+    if (l < 0 || st < 0 || st > 15 || !((xt_step_src()->l[l] >> st) & 1u)) return 0;
+    return 1 | (xt.k[XW_DRUM][0] == XT_PAT_USER ? xtra_chance(l, st) << 1 : 0);
+}
+/* the first edit: the programmed pattern (and its genre) into USER, chance cleared, PATTERN = USER */
+static void xt_step_user(void)
+{
+    int p = xt.k[XW_DRUM][0], fresh;
+    if (xt.wp_gen) {                     /* PLAY GEN: drop the temp beat and edit the real USER from here */
+        xt.wp_gen = 0;
+        xt.wp = xt.user;
+        xt.wp_src = XT_PAT_USER;
+        xt.reload = 0;
+    }
+    fresh = xt.reload || xt.wp_src != (uint8_t)p;
+    if (p != XT_PAT_USER) {
+        xt.user = *xt_pat(p);
+        xt.user_style = (uint8_t)(p < XT_PAT_USER ? 0 : 1 + (p - 9) / XT_PACK);
+        memset(xt.chance, 0, sizeof xt.chance);
+        xt.k[XW_DRUM][0] = XT_PAT_USER;
+    }
+    if (fresh) { xt.wp = xt.user; xt.reload = 0; }   /* (a pattern change was still waiting for the beat) */
+    xt.wp_src = XT_PAT_USER;
+}
+static void xt_step_audition(uint32_t l, uint32_t st)
+{
+    int f = xt_flavour();
+    uint32_t in = XT_KF_LANE[f][l], pm = 4096u;
+    if (l == L_KICK) { if (xt.wp.lng && f == KF_808) in = DI_BDL8; pm = XT_KF_KPM[f]; }
+    if (l == L_COWB) pm = XT_SEMI_Q12[xt_bell(st)];
+    xt_hit(in, XT_LANE_VEL[l], pm);
+}
+void xtra_step_toggle(int v)
+{
+    int l = xtra_step_lane(v), st = xt.k[XW_STEP][0];
+    uint32_t b, on;
+    if (l < 0 || st < 0 || st > 15) return;
+    b = 1u << st;
+    xt_step_user();
+    xt.user.l[l] = (uint16_t)(xt.user.l[l] ^ b);
+    on = xt.user.l[l] & b;
+    xt.wp.l[l] = (uint16_t)((xt.wp.l[l] & ~b) | on);
+    xt.chance[l] &= ~(3u << (2 * st));          /* a new or removed hit: 100 % */
+    if (l == L_CH && !on) { xt.user.roll &= ~(3u << (2 * st)); xt.wp.roll &= ~(3u << (2 * st)); }
+    xt.st_voice = (uint8_t)v;
+    xt.k[XW_STEP][1] = 0;
+    if (on && !xt.run && xt.on[XW_DRUM] && xt.c2 == 3) xt_step_audition((uint32_t)l, (uint32_t)st);   /* heard */
+#if POLI_PADREC
+    xtra_padrec_follow_user();                   /* Parity (as the Elite): PAD REC's working groove follows */
+#endif
+    xt.gen++;
+}
+static int xt_step_chance_now(void) { return xtra_step_cell(xt.st_voice, xt.k[XW_STEP][0]) >> 1; }
+static void xt_step_knob(int i, int v)
+{
+    int l = XT_STEP_LANE[xt.st_voice & 15u], st = xt.k[XW_STEP][0];
+    if (i == 0) { xt.k[XW_STEP][1] = (int16_t)(xtra_step_cell(xt.st_voice, v) >> 1); return; }
+    if (i == 2) {                        /* PLAY GEN: leaving ON restores the programmed pattern */
+        if (v == 0 && xt.wp_gen) {
+            if (xt.run) xt.reload = 1;
+            else xt_load_wp();
+        }
+        return;
+    }
+    if (i != 1) return;
+    if (!(xtra_step_cell(xt.st_voice, st) & 1)) { xt.k[XW_STEP][1] = 0; return; }   /* no hit there: stays 100 % */
+    xt_step_user();
+    xt.chance[l] = (xt.chance[l] & ~(3u << (2 * st))) | (uint32_t)v << (2 * st);
+#if POLI_PADREC
+    xtra_padrec_follow_user();
+#endif
+}
+static void xt_step_keys(uint32_t pressed, uint32_t released, int kb_oct, uint32_t now)
+{
+    uint32_t k;
+    for (k = 0; k < 27u; k++)
+        if (pressed & (1u << k)) xtra_step_toggle(xtra_step_white((int)k));
+    if (!released) return;                       /* keys let go here that were down before the page opened: */
+    if (xt.rec) { if (!xt.prev_keys) xt_off(&xt.prev_note); }   /* the REC preview ends, */
+    else if (xt.on[XW_PERF]) xt_fx_keys(0, released);           /* a held PERFORM effect ends, */
+    else if (xt.on[XW_ARP]) {                                   /* or the arp lets the note go */
+        int was = xt.nheld;
+        for (k = 0; k < 27u; k++)
+            if (released & (1u << k)) {
+                int note = 65 + (int)k + kb_oct * 12;
+                xt_key_off((uint8_t)(note < 0 ? 0 : note > 126 ? 126 : note));
+            }
+        xt_arp_held_changed(now, was);
+    }
+}
+
 /* ---- the panel: SEL (on/off), K1..K4, the buttons */
 void xtra_toggle(int w)
 {
     if (w < 0 || w >= XW_N) return;
+    if (w == XW_STEP) w = XW_DRUM;               /* Drum-Step: SEL on DRUM STEP = DRUMS on / off */
     if (w == XW_GROOVE || w == XW_GEN) { xtra_new_beat(); return; }   /* SEL on GROOVE / GENERATE = GENERATE */
     xt.on[w] = (uint8_t)!xt.on[w];
+#if POLI_ARP
+    if ((w == XW_ARP || w == XW_SEQ) && xt.on[w] && poli_arp_on()) poli_arp_set_on(0);   /* Parity: one arp at a time */
+#endif
     if (w == XW_PERF && !xt.on[w]) { xt.perf_bits = 0; xt.rep_pend = 0; xt.fill_hold = 0; xt.prev_keys = 0; }
     if (w == XW_PERF && xt.on[w]) xt.prev_keys = 0;
     if (w == XW_WAND) { xt.w_lock = xt.on[w]; xt.w_lpos = 0; }   /* SEL on WANDER = LOCK */
@@ -1440,8 +1722,15 @@ void xtra_toggle(int w)
 void xtra_knob(int w, int i, int steps)
 {
     int v;
+#if POLI_PADREC
+    if (w == XW_PADREC) { xtra_padrec_knob(i, steps); return; }
+#endif
+#if POLI_ARP
+    if (w == XW_CARP) { if (i >= 0 && i <= 3 && steps) { poli_arp_knob(i, steps); xt.gen++; } return; }
+#endif
     if (w < 0 || w >= XW_N || i < 0 || i > 3 || steps == 0) return;
     if (XT_HI[w][i] <= XT_LO[w][i]) return;      /* an empty knob */
+    if (w == XW_STEP) xt.k[XW_STEP][1] = (int16_t)xt_step_chance_now();
     v = xt.k[w][i] + steps;
     if (v < XT_LO[w][i]) v = XT_LO[w][i];
     if (v > XT_HI[w][i]) v = XT_HI[w][i];
@@ -1452,6 +1741,7 @@ void xtra_knob(int w, int i, int steps)
         if (np >= 0 && np != xt_pack(xt.wp_src)) xt.k[XW_SEQ][0] = XT_PACK_BPM[np];
         if (!xt.run) xt_load_wp();
     }
+    if (w == XW_STEP) xt_step_knob(i, v);       /* Drum-Step: STEP moves the cursor, CHANCE sets the cell's */
     if (w == XW_PERF && i == 2) xt.k[XW_PERF][3] = xt.lane_st[v];   /* LANE: STATE shows that lane's */
     if (w == XW_PERF && i == 3) xt.lane_st[xt.k[XW_PERF][2]] = (uint8_t)v;
     xtra_push();
@@ -1473,7 +1763,7 @@ void xtra_init(void)
     memset(&xt, 0, sizeof xt);
     for (w = 0; w < XW_N; w++)
         for (i = 0; i < 4; i++) xt.k[w][i] = XT_DEF[w][i];
-    for (i = 0; i < XT_SEQ_N; i++) xt.seq[i] = XT_SEQ_DEF[i];
+    for (i = 0; i < XT_SEQ_N; i++) xt.seq[i] = i < XT_SEQ_DEF_N ? XT_SEQ_DEF[i] : 255u;   /* Seq64: 17..64 rests */
     xt.arp_note = xt.seq_note = xt.prev_note = 255u;
     xt.rng = 0x1234567u;
     xt.drng = 0x89ABCDEu;                         /* Arp-Hold: the drums' own sequence */
@@ -1484,4 +1774,36 @@ void xtra_init(void)
     xt.user = XT_PAT[0];                          /* Wander-Drift: the 9th slot starts as pattern 1 */
     xt_load_wp();
     xtra_push();
+#if POLI_PADREC
+    xtra_padrec_init();
+#endif
 }
+
+#if POLI_PADREC
+void xtra_padrec_follow_user(void);              /* poli_padrec.inc */
+#include "poli_padrec.inc"
+#endif
+
+#if POLI_ARP
+/* Parity (23 Nov 2026): the CLASSIC ARP page (window 13). K1 MODE, K2 RATE, K3 OCTAVES, K4 GATE (5 % a click);
+ * SEL or ARP there = on / off; REC there = LATCH. The classic arp and the EXTRAS ARP / SEQ exclude each other. */
+static const int16_t XT_CARP_LO[4] = { 0, 0, 1, ARP_GATE_MIN };
+static const int16_t XT_CARP_HI[4] = { ARP_NMODE - 1, ARP_NRATE - 1, 4, ARP_GATE_MAX };
+static int xt_carp_lo(int i) { return (i < 0 || i > 3) ? 0 : XT_CARP_LO[i]; }
+static int xt_carp_hi(int i) { return (i < 0 || i > 3) ? 0 : XT_CARP_HI[i]; }
+static int xt_carp_get(int i)
+{
+    poli_arp_view_t a;
+    poli_arp_view(&a);
+    return i == 0 ? a.mode : i == 1 ? a.rate : i == 2 ? a.oct : i == 3 ? a.gate : 0;
+}
+void xtra_carp_toggle(void)
+{
+    if (!poli_arp_on()) {                        /* on: the EXTRAS ARP and SEQ go off first (one note path) */
+        if (xt.on[XW_ARP]) xtra_toggle(XW_ARP);
+        if (xt.on[XW_SEQ]) xtra_toggle(XW_SEQ);
+    }
+    poli_arp_set_on(!poli_arp_on());
+    xt.gen++;
+}
+#endif

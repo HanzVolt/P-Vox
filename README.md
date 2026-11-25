@@ -21,6 +21,16 @@ The complete firmware source is in this repository:
 
 Build: `./build.sh` (needs the JieLi Linux toolchain in `JIELI_TOOLCHAIN` and the AC79 SDK files in `AC79_SDK`; see `tools/build.py`).
 
+## Layout (v1.1)
+
+The FM-1 and SMK-37 Elite builds do not cross-compile, so each has its own complete source tree:
+
+- Repository root (`firmware/`, `tools/`, `host/`, `tests/`, `assets/`, `build.sh`): the FM-1 build, package identity **FM-1_7869** (release `v1.1-7869-fm1`).
+- `smk37/`: the SMK-37 Elite build, package identity **SMK-37 Elite_900** (release `v1.1-smk37-900`). It is self-contained; build it with `cd smk37 && ./build.sh --board smk37 --model elite`.
+- `docs/reports/`: the measured build reports published with each release.
+
+Both trees use the same sound engine and the same 63 factory presets (byte-identical output in the host render tests). The licence (`LICENSE`), `NOTICE.txt` and `ATTRIBUTION.txt` at the root apply to both.
+
 ## Licence
 
 - The code is **GPL-3.0-only** (`LICENSE`, and each file's header).

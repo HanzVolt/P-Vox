@@ -422,6 +422,31 @@ void fm1_alnk0_irq(void)                       /* via isr_alnk0 (hal/fm1_isr.S) 
 }
 extern void isr_alnk0(void);
 
+#if POLI_SPECTRUM && !BOARD_SMK37
+/* Parity (23 Nov 2026): the Elite's main-loop peek of the playing I2S half, the same code on the FM-1 (the same
+ * audio interrupt fills abuf: Q15 << 7). For the spectrum footer only. Not called from fm1_alnk0_irq,
+ * uac_render_start, polivoks_render, or TIMER5; it only reads abuf. Snap free_half once, then copy 128 L frames
+ * from the other half; arithmetic >>7 from the 24-bit left-justified words back to Q15. */
+static int smk_audio_snap_playing_q15(int16_t *dst, int n)
+{
+    unsigned h;
+    const int32_t *src;
+    int i;
+    if (!dst || n < 1)
+        return 0;
+    if (n > 128)
+        n = 128;
+    if (n > (int)HALF_FRAMES)
+        n = (int)HALF_FRAMES;
+    h = fm1_audio_free_half() ^ 1u;
+    src = &abuf[h * HALF_WORDS];
+    for (i = 0; i < n; i++)
+        dst[i] = (int16_t)(src[2 * i] >> 7);
+    RING_PUBLISH();
+    return n;
+}
+#endif
+
 /* ---- the main loop's duties: watchdog, USB, the installer's update request, the MASTER knob */
 static void platform_poll(void)
 {

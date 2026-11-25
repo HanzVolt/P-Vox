@@ -19,6 +19,26 @@
 #include "polivoks.h"
 #include "poli_gui_font.inc"
 #include "poli_terminus.inc"
+#include "poli_feat.h"
+#if POLI_EGPLOT
+#include "smk_amp_env.h"       /* Parity (23 Nov 2026): the Elite's plot geometry and analyser, the same headers */
+#include "poli_envview.inc"
+#endif
+#if POLI_SPECTRUM
+#define SMK_SA_STATE_ATTR PV_FEAT_BSS   /* (see poli_feat.h) */
+#include "smk_spectrum.h"
+#ifdef SMK_SPEC_HOST_FEED
+int smk_spectrum_host_snap(int16_t *dst, int n);
+#define SMK_SA_SNAP smk_spectrum_host_snap
+#elif defined(APP_NAME) && !defined(DINGHY_HOST)
+static int smk_audio_snap_playing_q15(int16_t *dst, int n);   /* platform.c: main loop only, never the audio path */
+#define SMK_SA_SNAP smk_audio_snap_playing_q15
+#else
+/* host frame programs without an audio path: a silent snapshot (the bars rest at the floor) */
+static int poli_ui_silent_snap(int16_t *dst, int n) { int i; for (i = 0; i < n; i++) dst[i] = 0; return n; }
+#define SMK_SA_SNAP poli_ui_silent_snap
+#endif
+#endif
 #include "poli_pvox_logo.inc"
 
 #define COL_BG    RGB(16, 16, 18)
@@ -326,7 +346,7 @@ static int depth_pos(int32_t depth)
 static const char *section_title(const poli_nav_view_t *v)
 {
     if (poli_preset_mode() == PV_MODE_SAVE) return tr("SAVE", "ЗАПИСЬ");
-    if (v->xtra >= 0) return tr("EXTRAS", "ДОПОЛН.");   /* Core2-FxSeq: the ADDED section */
+    if (v->xtra >= 0) return "";   /* no section label: the window title is already in the panel */
     switch (v->flat) {
     case 0: case 1: return tr("GENERATOR", "ГЕНЕРАТОР");
     case 2: case 3: return tr("MODULATOR", "МОДУЛЯТОР");
@@ -398,6 +418,14 @@ static void layout(void)
     L_py0 = top + 1;
     L_ftop = 240 - (th(E_KN) + th(E_FLAB) + th(E_FVAL) + 6);
     L_py1 = L_ftop - 3;                 /* messages overlay the panel; no reserved gap */
+#if POLI_SPECTRUM
+    /* 24-bar analyser is the bottom band on every page except save,
+     * which keeps the classic K1-K4 name-edit footer. */
+    if (poli_preset_mode() != PV_MODE_SAVE && poli_nav_xtra() < 0) {   /* merge: EXTRAS keep the K5..K8 footer */
+        L_ftop = 240 - SMK_SA_STRIP_H;
+        L_py1 = L_ftop;
+    }
+#endif
 }
 
 static void header(const poli_nav_view_t *v)
@@ -413,10 +441,12 @@ static void header(const poli_nav_view_t *v)
     char sub[16];
     CONT(0, 0, 240, L_py0);
     title_logo(3, 2, COL_CREAM);
-    OBST(sx, 2, sw, bh, "section box");
-    box(sx, 2, sw, bh, COL_OR);
-    CONT(sx + 1, 3, sw - 2, bh - 2);
-    g_text_c(sx + sw / 2, 2 + (bh - th(E_SEC)) / 2, sec, E_SEC, COL_OR);
+    if (sec[0]) {                   /* NoText: skip an empty box when the added pages have no section name */
+        OBST(sx, 2, sw, bh, "section box");
+        box(sx, 2, sw, bh, COL_OR);
+        CONT(sx + 1, 3, sw - 2, bh - 2);
+        g_text_c(sx + sw / 2, 2 + (bh - th(E_SEC)) / 2, sec, E_SEC, COL_OR);
+    }
     OBST(ax, 2, aw + bw, bh, "lang tabs");
     if (v->lang) { fill_rect(ax, 2, aw, bh, COL_OR); box(bx, 2, bw, bh, COL_GRAY); }
     else { box(ax, 2, aw, bh, COL_GRAY); fill_rect(bx, 2, bw, bh, COL_OR); }
@@ -531,6 +561,11 @@ static int pv_group(int code)
     for (g = TN_NGROUP - 1; g > 0; g--) if (code >= TN_GROUP[g]) return g;
     return 0;
 }
+
+#if POLI_SPECTRUM
+static void spectrum_paint(void);
+#endif
+
 static void footer_save(void)
 {
     static const char *const GRP[TN_NGROUP] = { "_", "ABC", "abc", "АБВ", "абв", "123", "+-." };
@@ -564,7 +599,12 @@ static void footer(const poli_nav_view_t *v)
 {
     int i, y = L_ftop;
     if (poli_preset_mode() == PV_MODE_SAVE) { footer_save(); return; }
-    if (v->xtra >= 0) { footer_xtra(v); return; }
+    if (v->xtra >= 0) { footer_xtra(v); return; }   /* merge: EXTRAS windows keep their K1..K4 names (Elite too) */
+#if POLI_SPECTRUM
+    (void)i; (void)y; (void)v;
+    spectrum_paint();               /* 52 px analyser, every page except save */
+    return;
+#endif
     hline(0, y, 240, COL_LINE);
     for (i = 0; i < 4; i++) {
         int cx = 30 + i * FOOT_PITCH;
@@ -685,6 +725,17 @@ static void message(const poli_nav_view_t *v)
     case MSG_RESTORE: s = tr("FACTORY PATTERN", "ЗАВОДСКОЙ РИТМ"); break;
     case MSG_LOCK_ON: s = tr("LOCK ON", "ЗАМОК ВКЛ"); break;
     case MSG_LOCK_OFF: s = tr("LOCK OFF", "ЗАМОК ВЫКЛ"); break;
+#if POLI_PADREC
+    case MSG_PAD_SAVED: s = tr("PAD GROOVE SAVED", "ГРУВ СОХРАНЕН"); break;
+    case MSG_PAD_EMPTY: s = tr("EMPTY SLOT", "ПУСТОЙ СЛОТ"); break;
+    case MSG_PAD_UNDO: s = tr("UNDO", "ОТМЕНА"); break;
+    case MSG_PAD_CLEARED: s = tr("CLEARED", "ОЧИЩЕНО"); break;
+    case MSG_PAD_FAILED: s = tr("NOT SAVED", "НЕ СОХРАНЕН"); break;   /* Parity: the flash write failed */
+#endif
+#if POLI_ARP
+    case MSG_CARP_LATCH: s = tr("LATCH ON", "ФИКС. ВКЛ"); break;    /* Parity: REC on CLASSIC ARP */
+    case MSG_CARP_FREE: s = tr("LATCH OFF", "ФИКС. ВЫКЛ"); break;
+#endif
     default: break;
     }
     if (s) {   /* small box over the bottom of the panel */
@@ -769,7 +820,7 @@ static int row_h(void)
     return h + 8;
 }
 static int val_w(void) { int a = g_tw("127", E_VAL), b = g_tw("-64", E_VAL); return a > b ? a : b; }
-static void labeled_bar(int y, int lw, const char *lab, int pos, int maxv)
+static void labeled_bar(int y, int lw, const char *lab, int pos, int maxv)   /* Parity: the FM-1's own, unchanged */
 {
     char a[8];
     int vw = val_w(), vh = th(E_VAL) > 12 ? th(E_VAL) : 12;
@@ -856,7 +907,7 @@ static void onoff_window(const poli_nav_view_t *v, const char *title, const char
     g_text_c(120, y, title, E_PT, COL_CREAM);
     y += th(E_PT) + (blab2 ? 6 : 10);
     labeled_bar(y, lw, blab, v->slot_pos[0], 127);
-    if (blab2) {   /* FILTER MOD K2: velocity -> filter contour and amp level (merge: Elite wording) */
+    if (blab2) {   /* FILTER MOD K2: velocity -> filter contour and amp level */
         y += row_h();
         labeled_bar(y, lw, blab2, v->slot_pos[1], 127);
         y += row_h();
@@ -952,10 +1003,136 @@ static void draw_save(void)
     g_text(12, y, tr("SAVE - DO IT  SEL - COMPARE", "SAVE - ДА  SEL - СРАВНИТЬ"), E_LAB, COL_DIM);
 }
 
-/* ---- Core2-FxSeq (15 Nov 2026): the ADDED windows (section EXTRAS: ARP, SEQ, DRUMS, DELAY, REVERB). Each is
- * tagged ADDED: none of it is on a Polivoks. Title + ON/OFF like the filter window, the four K1..K4 rows with
- * their named values, then a status line (clock and transport; core 2's load for the sound features). The SEQ
- * window shows its 16 steps (orange = the step playing, a bar under the step REC writes next). */
+#if POLI_EGPLOT
+enum { SMK_AMPENV_PERIOD_MS = 40, SMK_AMPENV_MAX_H = 64 };
+
+static uint32_t ampenv_last_ms PV_FEAT_BSS;
+static int ampenv_last_stage PV_FEAT_BSS, ampenv_last_rpt PV_FEAT_BSS;
+static int32_t ampenv_last_level PV_FEAT_BSS, ampenv_last_atk PV_FEAT_BSS; /* last_atk holds the nav-pos signature */
+
+/* Plot box under the AMP EG title, down to the panel bottom. The
+ * analyser lives in the 52 px footer, so this can use the freed height.
+ * Partial redraws blit in CV_MAX-sized strips when h is taller than one canvas. */
+static void ampenv_plot_rect(int *x, int *y, int *w, int *h)
+{
+    int ty = L_py0 + 4, trh = title_row_h();
+    int top = ty + trh + 4;
+    int bh = (L_py1 - 4) - top;
+    if (bh < 16) bh = 16;
+    *x = 12;
+    *y = top;
+    *w = 216;
+    *h = bh;
+}
+
+/* Plot shape from the steadied 7-bit nav positions. Knob 0 is visual
+ * time 0 (vertical). Widths track the fader in a fixed window; the
+ * stroke is the firmware one-pole RC contour. */
+static void env_plot_geom(int which, int x, int y, int w, int h, smk_ampenv_geom_t *g)
+{
+    int base = which ? SLOT_ATK_A : SLOT_ATK_F;
+    smk_ampenv_geom(poli_nav_pos(base + 0),
+                    poli_nav_pos(base + 1),
+                    poli_nav_pos(base + 2),
+                    poli_nav_pos(base + 3),
+                    x, y, w, h, g);
+}
+
+static void env_stroke_px(int x, int y, int xmin, int xmax, int ymin, int ymax)
+{
+    if (x < xmin || x > xmax) return;
+    if (y < ymin) y = ymin;
+    if (y > ymax) y = ymax;
+    PSET(x, y, COL_OR);
+    if (y + 1 <= ymax)
+        PSET(x, y + 1, COL_OR);
+}
+
+static void env_stroke_col(int x, int y0, int y1, int xmin, int xmax, int ymin, int ymax)
+{
+    int y;
+    if (y0 > y1) { y = y0; y0 = y1; y1 = y; }
+    for (y = y0; y <= y1; y++)
+        env_stroke_px(x, y, xmin, xmax, ymin, ymax);
+}
+
+/* RC contour, one 2 px stroke on every stage (including a vertical
+ * release). Clipped to the inner plot box so a partial update cannot
+ * touch the orange window frame. */
+static void env_paint_plot_at(int which, int x, int y, int w, int h,
+                              const poli_ampenv_view_t *ev)
+{
+    smk_ampenv_geom_t g;
+    int xi, yi, px, py, dx, dy;
+    int xmin, xmax, ymin, ymax;
+    env_plot_geom(which, x, y, w, h, &g);
+    box(x, y, w, h, COL_DIM);
+    xmin = x + 1;
+    xmax = x + w - 2;
+    ymin = y + 1;
+    ymax = y + h - 2;
+    if (xmax < xmin) xmax = xmin;
+    if (ymax < ymin) ymax = ymin;
+    px = -1;
+    py = 0;
+    if (g.x_peak == g.x0)
+        env_stroke_col(g.x0, g.y_zero, g.y_peak, xmin, xmax, ymin, ymax);
+    if (g.x_sus0 == g.x_peak)
+        env_stroke_col(g.x_peak, g.y_peak, g.y_sus, xmin, xmax, ymin, ymax);
+    if (g.x_end == g.x_sus1)
+        env_stroke_col(g.x_sus1, g.y_sus, g.y_zero, xmin, xmax, ymin, ymax);
+    for (xi = g.x0; xi <= g.x_end; xi++) {
+        yi = smk_ampenv_y_at(&g, xi);
+        if (px >= 0)
+            env_stroke_col(xi, py, yi, xmin, xmax, ymin, ymax);
+        else
+            env_stroke_px(xi, yi, xmin, xmax, ymin, ymax);
+        px = xi;
+        py = yi;
+    }
+    if (ev && smk_ampenv_dot(&g, ev->stage, ev->level, &dx, &dy)) {
+        int dw = 5, dh = 5;
+        dx -= 2;
+        dy -= 2;
+        if (dx < xmin) { dw -= xmin - dx; dx = xmin; }
+        if (dy < ymin) { dh -= ymin - dy; dy = ymin; }
+        if (dx + dw - 1 > xmax) dw = xmax - dx + 1;
+        if (dy + dh - 1 > ymax) dh = ymax - dy + 1;
+        if (dw > 0 && dh > 0)
+            fill_rect(dx, dy, dw, dh, COL_CREAM);
+    }
+}
+
+static void ampenv_paint_plot(void)
+{
+    int x, y, w, h;
+    poli_ampenv_view_t ev;
+    ampenv_plot_rect(&x, &y, &w, &h);
+    polivoks_ampenv_view(&ev);
+    env_paint_plot_at(1, x, y, w, h, &ev);
+}
+
+
+#endif
+#if POLI_SPECTRUM
+static uint16_t spec_shown[SMK_SA_BARS] PV_FEAT_BSS;
+static uint32_t spec_last_ms PV_FEAT_BSS;
+
+static void spectrum_strip_rect(int *x, int *y, int *w, int *h)
+{
+    *x = 8;
+    *y = 240 - SMK_SA_STRIP_H;
+    *w = 224;
+    *h = SMK_SA_STRIP_H;
+}
+
+#endif
+/* Stacked blue→teal blocks, red peak only. Main loop, never the ISR. */
+
+/* ---- Core2-FxSeq (15 Nov 2026): ARP, SEQ, DRUMS, DELAY, REVERB (and later Wander / Drift pages).
+ * Title + ON/OFF like the filter window, the four K1..K4 rows with their named values, then a status
+ * line (clock and transport; core 2's load for the sound features). The SEQ window shows its 16 steps
+ * (orange = the step playing, a bar under the step REC writes next). */
 static const char *const XT_RATE_NAME[7] = { "1/4", "1/4T", "1/8", "1/8T", "1/16", "1/16T", "1/32" };
 static const char *const XT_DLY_NAME[11] = { "1/32", "1/16T", "1/16", "1/8T", "1/16.", "1/8", "1/4T", "1/8.", "1/4",
                                              "1/4.", "1/2" };
@@ -972,24 +1149,47 @@ static const char *xtra_title(int w)
     case 8: return tr("GENERATE", "ГЕНЕРАТОР");
     case 9: return tr("DRUM FX", "ЭФФ. УДАРНЫХ");
     case 10: return tr("PERFORM", "ИСПОЛНЕНИЕ");
+    case 11: return tr("DRUM STEP", "ШАГИ УДАРНЫХ");
+#if POLI_PADREC
+    case XW_PADREC: return tr("PAD REC", "ЗАП. ПЭДОВ");   /* (Drum-Step: PAD REC 11 -> 12) */
+#endif
+#if POLI_ARP
+    case XW_CARP: return tr("CLASSIC ARP", "КЛАСС. АРП");   /* Parity: the classic arp's page (the Elite has none) */
+#endif
     default: return tr("REVERB", "РЕВЕРБ");
     }
 }
 static const char *xtra_label(int w, int i)
 {
-    static const char *const EN[11][4] = { {"MODE", "RATE", "OCTAVES", "GATE"}, {"TEMPO", "STEPS", "RATE", "GATE"},
+    static const char *const EN[12][4] = { {"MODE", "RATE", "OCTAVES", "GATE"}, {"TEMPO", "STEPS", "RATE", "GATE"},
                                           {"PATTERN", "LEVEL", "TUNE", "DECAY"}, {"TIME", "FEEDBK", "TONE", "LEVEL"},
                                           {"SIZE", "DAMP", "", "LEVEL"}, {"STEP/LEAP", "REPEAT", "REST", "HOME"},
                                           {"CHANGE", "EVERY", "MUTATE", "POOL"}, {"SWING", "HAT BUSY", "FILL", "KIT"},
                                           {"STYLE", "DENSITY", "SURPRISE", "LOCK"}, {"DRIVE", "DUCK", "ECHO", "REVERB"},
-                                          {"GATE", "REPEAT", "LANE", "STATE"} };
-    static const char *const RU[11][4] = { {"РЕЖИМ", "ДОЛЯ", "ОКТАВЫ", "ДЛИТ."}, {"ТЕМП", "ШАГИ", "ДОЛЯ", "ДЛИТ."},
+                                          {"GATE", "REPEAT", "LANE", "STATE"}, {"STEP", "CHANCE", "", ""} };
+    static const char *const RU[12][4] = { {"РЕЖИМ", "ДОЛЯ", "ОКТАВЫ", "ДЛИТ."}, {"ТЕМП", "ШАГИ", "ДОЛЯ", "ДЛИТ."},
                                           {"РИТМ", "ГРОМК.", "СТРОЙ", "ЗАТУХ."}, {"ВРЕМЯ", "ПОВТОР", "ТЕМБР", "ГРОМК."},
                                           {"РАЗМЕР", "ГЛУШ.", "", "ГРОМК."}, {"ШАГ/СКАЧОК", "ПОВТОР", "ПАУЗА", "ДОМОЙ"},
                                           {"СМЕНА", "КАЖДЫЕ", "МУТАЦИЯ", "НАБОР"}, {"СВИНГ", "ХЭТЫ", "СБИВКА", "КОМПЛ."},
                                           {"СТИЛЬ", "ПЛОТН.", "СЮРПРИЗ", "ЗАМОК"}, {"ПЕРЕГРУЗ", "ПРИЖИМ", "ЭХО", "РЕВЕРБ"},
-                                          {"ГЕЙТ", "ПОВТОР", "ДОРОЖКА", "СОСТ."} };
-    if (w < 0 || w > 10 || i < 0 || i > 3) return "";
+                                          {"ГЕЙТ", "ПОВТОР", "ДОРОЖКА", "СОСТ."}, {"ШАГ", "ШАНС", "", ""} };
+#if POLI_PADREC || POLI_ARP
+    if (w < 0 || i < 0 || i > 3) return "";
+#if POLI_PADREC
+    if (w == XW_PADREC) {   /* (FM-1: K4 STEP, the cursor; the Elite moves it with LEFT / RIGHT) */
+        static const char *const P_EN[4] = { "SLOT", "MODE", "QUANT", "STEP" };
+        static const char *const P_RU[4] = { "СЛОТ", "РЕЖИМ", "КВАНТ", "ШАГ" };
+        return poli_nav_lang() ? P_RU[i] : P_EN[i];
+    }
+#endif
+#if POLI_ARP
+    if (w == XW_CARP) return poli_nav_lang() ? RU[0][i] : EN[0][i];   /* MODE, RATE, OCTAVES, GATE: the ARP's names */
+#endif
+    if (w > 11) return "";
+#else
+    if (w < 0 || w > 11 || i < 0 || i > 3) return "";
+#endif
+    if (w == 11 && i == 2) return poli_nav_lang() ? "АВТО" : "ONPLAY";   /* PLAY GEN: footer only, 4/6 glyphs, 32/48 px */
     return poli_nav_lang() ? RU[w][i] : EN[w][i];
 }
 /* the value as shown: a name where the knob steps through names, else the number */
@@ -997,6 +1197,26 @@ static const char *xtra_value(int w, int i, char *b)
 {
     int p = xtra_get(w, i);
     b[0] = 0;
+#if POLI_PADREC
+    if (w == XW_PADREC) {
+        if (i == 0) { put_i(b, p + 1); return b; }
+        if (i == 1) return p ? tr("STEP", "ШАГ") : tr("LIVE", "ЖИВОЙ");
+        if (i == 2) return p ? tr("16TH", "1/16") : tr("OFF", "ВЫКЛ");
+        if (i == 3) { put_i(b, p + 1); return b; }   /* FM-1: the cursor 1-16 */
+        return "";
+    }
+#endif
+#if POLI_ARP
+    if (w == XW_CARP) {   /* UP, DOWN, UP-DOWN, RANDOM, AS PLAYED; the ARP's rate names; 1-4; 5-100 % */
+        static const char *const C_EN[5] = { "UP", "DOWN", "UP-DN", "RAND", "PLAYED" };
+        static const char *const C_RU[5] = { "ВВЕРХ", "ВНИЗ", "ВВ-ВН", "СЛУЧ.", "ПОРЯД." };
+        if (i == 0) return poli_nav_lang() ? C_RU[p] : C_EN[p];
+        if (i == 1) return XT_RATE_NAME[p];
+        if (i == 2) { put_i(b, p); return b; }
+        if (p >= ARP_GATE_MAX) return tr("TIE", "ЛИГА");
+        put_i(b, p); cat(b, b, "%"); return b;
+    }
+#endif
     if (w == 0 && i == 0) {
         static const char *const M_EN[7] = { "UP", "DOWN", "UP-DN", "RAND", "ORDER", "WANDER", "FROM SEQ" };
         static const char *const M_RU[7] = { "ВВЕРХ", "ВНИЗ", "ВВ-ВН", "СЛУЧ.", "ПОРЯД.", "БЛУЖД.", "ИЗ СЕКВ." };
@@ -1056,6 +1276,13 @@ static const char *xtra_value(int w, int i, char *b)
         if (i == 2) return poli_nav_lang() ? L_RU[p] : L_EN[p];
         return p == 0 ? tr("ON", "ВКЛ") : p == 1 ? tr("MUTE", "ГЛУШ.") : tr("SOLO", "СОЛО");
     }
+    if (w == 11) {  /* Drum-Step: STEP 1..16, CHANCE 100 / 75 / 50 / 25 %, PLAY GEN ON/OFF */
+        if (i == 0) { put_i(b, p + 1); return b; }
+        if (i == 2) return p ? tr("ON", "ВКЛ") : tr("OFF", "ВЫКЛ");
+        if (i == 3) return "";
+        put_i(b, 100 - 25 * p); cat(b, b, "%");
+        return b;
+    }
     if (w == 3 && i == 0) return XT_DLY_NAME[p];
     if (w == 4 && i == 2) return "";
     put_i(b, p);
@@ -1082,7 +1309,7 @@ static void footer_xtra(const poli_nav_view_t *v)
     for (i = 0; i < 4; i++) {
         int cx = 30 + i * FOOT_PITCH;
         char kn[3];
-        kn[0] = 'K'; kn[1] = (char)('1' + i); kn[2] = 0;
+        kn[0] = 'K'; kn[1] = (char)((BOARD_SMK37 ? '5' : '1') + i); kn[2] = 0;   /* merge: the Elite's K5..K8 */
         CONT(cx - FOOT_PITCH / 2, y + 1, FOOT_PITCH, 240 - y - 1);
         g_text_c(cx, y + 2, kn, E_KN, COL_DIM);
         if (!xtra_label(v->xtra, i)[0]) continue;
@@ -1095,6 +1322,17 @@ static void xtra_status(const poli_nav_view_t *v, char *d)
 {
     char n[12];
     d[0] = 0;
+#if POLI_ARP
+    if (v->xtra == XW_CARP) {   /* Parity: the classic arp's own clock: MIDI clock while it runs, else its tempo */
+        poli_arp_view_t a;
+        poli_arp_view(&a);
+        put_i(n, a.bpm);
+        cat(d, a.ext ? "MIDI " : tr("INT ", "ВНУТР. "), n);
+        cat(d, d, tr(" BPM ", " УД "));
+        cat(d, d, a.running ? (a.on ? tr("ON", "ВКЛ") : tr("OFF", "ВЫКЛ")) : tr("STOP", "СТОП"));
+        return;
+    }
+#endif
     if (v->xtra <= 2 || v->xtra >= 5) {
         put_i(n, xtra_bpm());
         cat(d, xtra_ext() ? "MIDI " : tr("INT ", "ВНУТР. "), n);
@@ -1102,6 +1340,9 @@ static void xtra_status(const poli_nav_view_t *v, char *d)
         cat(d, d, xtra_running() ? tr("PLAY", "ИГРА") : tr("STOP", "СТОП"));
         if (v->xtra == 1 && xtra_rec()) { cat(d, d, tr(" REC ", " ЗАП "));
                                           put_i(n, xtra_rec_cur() + 1); cat(d, d, n); }
+#if POLI_PADREC
+        if (v->xtra == XW_PADREC && xtra_padrec_armed()) cat(d, d, tr(" REC", " ЗАП"));
+#endif
         if (v->xtra == 1 && xtra_transpose()) {   /* Drums12-Transpose: "TR +5", "TR -7" */
             n[0] = xtra_transpose() > 0 ? '+' : 0; n[1] = 0;
             cat(d, d, " TR "); cat(d, d, n); put_i(n, xtra_transpose()); cat(d, d, n);
@@ -1204,7 +1445,11 @@ static int draw_xtra_wd(int w, int y)
  * change. The synth's pages (ARP, WANDER, SEQ, DELAY, REVERB) are drawn exactly as before. */
 static const uint16_t TREFOIL[15] = { 0x03E0, 0x07F0, 0x03E0, 0x03E0, 0x01C0, 0x0000, 0x01C0, 0x7DDF, 0x7DDF, 0x7E3F,
                                       0x3E3E, 0x3C1E, 0x1C1C, 0x0808, 0x0000 };
-static int chern_page(int w) { return w == 2 || (w >= 6 && w <= 10); }
+#if POLI_PADREC
+static int chern_page(int w) { return w == 2 || (w >= 6 && w <= 12); }   /* (Drum-Step: 11 DRUM STEP, 12 PAD REC) */
+#else
+static int chern_page(int w) { return w == 2 || (w >= 6 && w <= 11); }   /* (Drum-Step: 11 DRUM STEP too) */
+#endif
 static void hazard(int x, int y, int w, int h)
 {
     int i, j;
@@ -1320,9 +1565,37 @@ static int draw_xtra_df(int w, int y)
     }
     return y;
 }
+/* Drum-Step: the 16 x 16 grid under the knobs. Columns = steps 1..16, rows = the white-key voices top to bottom
+ * (kick .. crash). A hit is yellow, dimmer the lower its chance; the last-touched voice's row is brighter, the
+ * cursor column is lit and its cell framed; the playing step (transport running) is marked above the grid. */
+static void draw_xtra_step(int y)
+{
+    static const uint16_t HIT[2][4] = { { RGB(236, 192, 0), RGB(176, 140, 0), RGB(124, 98, 0), RGB(80, 62, 0) },
+                                        { RGB(255, 236, 120), RGB(214, 180, 40), RGB(160, 128, 16), RGB(110, 86, 8) } };
+    int cw = 13, x0 = 120 - (16 * cw) / 2, cur = xtra_get(11, 0), sel = xtra_step_voice(), r, k, rh, gy;
+    int play = xtra_running() && xtra_on(2) ? xtra_drum_pos() : -1;
+    rh = (L_py1 - 6 - (y + 3)) / 16;
+    if (rh > 8) rh = 8;
+    if (rh < 3) rh = 3;
+    gy = y + 3;
+    OBST(x0 - 2, y, 16 * cw + 2, 3 + 16 * rh + 1, "step grid");
+    if (play >= 0) fill_rect(x0 + play * cw, y, cw - 2, 2, COL_OR);
+    for (r = 0; r < 16; r++)
+        for (k = 0; k < 16; k++) {
+            int c = xtra_step_cell(r, k), hi = r == sel;
+            uint16_t col = (c & 1) ? HIT[hi][c >> 1] : (k == cur && hi) ? COL_GRAY : (k == cur || hi) ? COL_DIM : COL_LINE;
+            fill_rect(x0 + k * cw, gy + r * rh, cw - 2, rh - 1, col);
+        }
+    box(x0 + cur * cw - 2, gy + sel * rh - 1, cw + 2, rh + 1, COL_OR);   /* the cell K2 sets */
+}
+#if POLI_ARP
+#define XT_STATUS_LIVE(w) ((w) >= 8 && (w) != XW_CARP)   /* Parity: the classic arp's clock line stays grey */
+#else
+#define XT_STATUS_LIVE(w) ((w) >= 8)
+#endif
 static void draw_xtra(const poli_nav_view_t *v)
 {
-    const char *sa = tr("OFF", "ВЫКЛ"), *sb = tr("ON", "ВКЛ"), *tag = tr("ADDED", "ДОБАВЛ.");
+    const char *sa = tr("OFF", "ВЫКЛ"), *sb = tr("ON", "ВКЛ");
     int sh = seg_h(), sw = seg_w(sa, sb, 40), y = L_py0 + 4, trh = title_row_h(), i, rh = row_h() - 2, lw;
     int vw = g_tw("1/16T", E_VAL), w = v->xtra, ch = chern_page(w), tx = 12;
     char b[16], st[64];
@@ -1343,49 +1616,485 @@ static void draw_xtra(const poli_nav_view_t *v)
     if (w == 10) { sb = tr("KEYS", "КЛАВ."); sw = seg_w(sa, sb, 40); }
     if (w == 7 || w == 8)                        /* GROOVE / GENERATE: SEL writes a new beat, no on/off */
         g_text_r(228, y + (trh - th(E_LAB)) / 2, tr("SEL NEW BEAT", "SEL НОВЫЙ"), E_LAB, ch ? COL_HZY : COL_GRAY);
+#if POLI_PADREC
+    else if (w == XW_PADREC)
+        g_text_r(228, y + (trh - th(E_LAB)) / 2, tr("SEL UNDO", "SEL ОТМЕНА"), E_LAB, ch ? COL_HZY : COL_GRAY);
+#endif
     else {
         segment(228 - 2 * sw - 4, y + (trh - sh) / 2, sw, sh, !v->switch_on, sa);
         segment(228 - sw, y + (trh - sh) / 2, sw, sh, v->switch_on, sb);
     }
     CONT(5, L_py0 + 1, 230, L_py1 - L_py0 - 2);
     y += trh + 1;
-    g_text(12, y, tag, E_LAB, COL_OR);           /* not a Polivoks feature */
-    if (ch) dosimeter(228, y);
-    else g_text(12 + g_tw(tag, E_LAB) + 8, y, tr("NOT ON A POLIVOKS", "НЕ ИЗ ПОЛИВОКСА"), E_LAB, COL_DIM);
-    y += th(E_LAB) + 3;
-    lw = maxw(xtra_label(w, 0), xtra_label(w, 1), xtra_label(w, 2), xtra_label(w, 3));
+#if POLI_PADREC && !BOARD_SMK37
+    if (ch && w != 11 && w != XW_PADREC) {      /* Parity, FM-1: PAD REC gives the dosimeter's row to its grid and status
+                                                   line, as DRUM STEP does (the K1-K4 footer leaves a shorter panel) */
+#else
+    if (ch && w != 11) {                        /* NoText (Elite, 23 Nov 2026, as the FM-1): drum pages (PAD REC too) keep
+                                                   the dosimeter; no tag or disclaimer (Drum-Step: its row goes to the grid) */
+#endif
+        dosimeter(228, y);
+        y += th(E_LAB) + 3;
+    }
+    lw = maxw(xtra_label(w, 0), xtra_label(w, 1),
+              w == 11 ? "" : xtra_label(w, 2),   /* PLAY GEN: footer-only, do not widen the bars */
+              xtra_label(w, 3));
     for (i = 0; i < 4; i++) {
         int lo = xtra_lo(w, i), hi = xtra_hi(w, i), h = th(E_LAB) > 12 ? th(E_LAB) : 12;
         int bx = 12 + lw + 6, bw = 228 - vw - 6 - bx;
         if (hi <= lo) continue;                  /* REVERB K3: none */
+        if (w == 11 && i == 2) continue;         /* PLAY GEN: skip the 3rd bar row so the 16x16 grid stays 5 px */
         g_text(12, y + (h - th(E_LAB)) / 2, xtra_label(w, i), E_LAB, ch ? COL_HZY : COL_GRAY);
-        if (ch) bar_c(bx, y + (h - 10) / 2, bw, 10, xtra_get(w, i) - lo, hi - lo, COL_HZY, COL_HZY);
+        if (ch && w == 11 && i == 1) bar_c(bx, y + (h - 10) / 2, bw, 10, 4 - xtra_get(w, i), 4, COL_HZY, COL_HZY);
+        else if (ch) bar_c(bx, y + (h - 10) / 2, bw, 10, xtra_get(w, i) - lo, hi - lo, COL_HZY, COL_HZY);   /* (Drum-Step:
+                                                   CHANCE fills with the chance: 100 % full, 25 % a quarter) */
         else bar(bx, y + (h - 10) / 2, bw, 10, xtra_get(w, i) - lo, hi - lo);
         g_text_r(228, y + (h - th(E_VAL)) / 2, xtra_value(w, i, b), E_VAL, COL_CREAM);
         y += rh;
     }
-    if (w == 1) {   /* the 16 steps: height = the note within its pattern's range; empty = a rest */
-        int k, n = xtra_get(1, 1), lo = 127, hi = 0, cw = 13, x0 = 120 - (16 * cw) / 2, hh = 18;
-        for (k = 0; k < 16; k++) { int q = xtra_seq_note(k); if (q != 255) { if (q < lo) lo = q; if (q > hi) hi = q; } }
+    if (w == 11) { draw_xtra_step(y); return; }   /* Drum-Step: the grid takes the status line's room */
+#if POLI_PADREC
+    if (w == XW_PADREC) {   /* working groove: 4 lane groups x 16 steps, cursor / playhead in orange */
+        static const uint32_t ROWM[4] = { 0x00001u, 0x0020Eu, 0x08030u, 0x1FDC0u };
+        int k, r, cw = 13, x0 = 120 - (16 * cw) / 2, pos = xtra_padrec_step(), run = xtra_running() && xtra_on(2);
+        char d[128], n[12];
+        d[0] = 0;
         for (k = 0; k < 16; k++) {
-            int q = xtra_seq_note(k), x = x0 + k * cw;
-            uint16_t c = k >= n ? COL_LINE : (xtra_running() && xtra_on(1) && k == xtra_seq_pos()) ? COL_OR : COL_GRAY;
-            box(x, y, cw - 2, hh, k >= n ? COL_LINE : COL_DIM);
-            if (q != 255 && k < n) {
+            int x = x0 + k * cw;
+            for (r = 0; r < 4; r++) {
+                uint32_t l, on = 0;
+                for (l = 0; l < 17u; l++) if (((ROWM[r] >> l) & 1u) && ((xtra_padrec_work_lane((int)l) >> k) & 1)) on = 1;
+                fill_rect(x + 2, y + r * 6, cw - 6, 4, on ? ((run || xtra_padrec_mode() || xtra_padrec_armed()) && k == pos ? COL_OR : COL_HZY) : COL_LINE);
+            }
+            if (xtra_padrec_mode() && k == pos) hline(x, y + 4 * 6, cw - 2, COL_OR);
+        }
+        y += 4 * 6 + 4;
+        if (xtra_padrec_countin()) {
+            put_i(n, (xtra_padrec_countin() + 3) / 4);
+            cat(d, tr("COUNT-IN ", "ОТСЧЕТ "), n);   /* (Parity: the UI font has no Ё) */
+        } else if (xtra_padrec_waiting()) cat(d, tr("WAIT BAR", "ЖДАТЬ ТАКТ"), "");
+        else if (xtra_padrec_armed()) cat(d, tr("RECORD", "ЗАПИСЬ"), "");
+        else cat(d, xtra_padrec_slot_used(xtra_padrec_slot()) ? tr("SLOT ", "СЛОТ ") : tr("EMPTY SLOT ", "ПУСТОЙ СЛОТ "), "");
+        if (!xtra_padrec_countin() && !xtra_padrec_waiting()) {
+            int dn = 0;
+            put_i(n, xtra_padrec_slot() + 1);
+            while (d[dn]) dn++;
+            if (dn && d[dn - 1] != ' ') cat(d, d, " ");
+            if (xtra_padrec_armed() || xtra_padrec_slot_used(xtra_padrec_slot())) { cat(d, d, n); }
+        }
+        if (xtra_c2() != 3) cat_fit(d, tr("  NO 2ND CORE", "  НЕТ 2 ЯДРА"));
+#if BOARD_SMK37
+        else cat_fit(d, tr("  REC ARM  BT SAVE  SEQ CLR", "  REC ЗАП  BT СОХР  SEQ СБРОС"));
+#else
+        else cat_fit(d, tr("  REC ARM  SAVE  SEQ CLR", "  REC ЗАП  SAVE  SEQ СБРОС"));   /* FM-1: the SAVE button */
+#endif
+        if (d[0]) {
+            g_text(12, y, d, E_LAB, xtra_padrec_armed() ? COL_OR : COL_GRAY);
+            /* Parity, FM-1: the unsaved mark is the preset row's orange '*' (the label font has no '*': it drew a box) */
+            if (xtra_padrec_dirty()) {
+                int sx = 12 + g_tw(d, E_LAB) + 2, dn = 0;
+                while (d[dn]) dn++;
+                if (dn && d[dn - 1] == ' ') sx -= adv(E_LAB);
+                g_text(sx + 2, y, "*", E_PRE, COL_OR);
+            }
+            y += th(E_LAB) + 2;
+        }
+    }
+#endif
+    if (w == 1) {   /* the 16 steps: height = the note within its pattern's range; empty = a rest */
+        /* Seq64 (22 Nov 2026): STEPS up to 64. One page of 16 cells is shown: the page with the REC cursor, else the
+         * playing step, else (stopped) the last step. Above 16 steps the cells are 6 px lower and a strip of 4
+         * segments below them shows the pages: in use (grey), the one shown (cream), beyond STEPS (dark). Up to 16 steps
+         * the drawing is the one before (page 1, no strip). */
+        int k, n = xtra_get(1, 1), lo = 127, hi = 0, cw = 13, x0 = 120 - (16 * cw) / 2, hh = n > 16 ? 12 : 18;
+        int m = n > 16 ? n : 16, f0 = xtra_rec() ? xtra_rec_cur() : (xtra_running() && xtra_on(1)) ? xtra_seq_pos() : n - 1;
+        int pg = n > 16 && f0 < n ? f0 / 16 : 0, b0 = pg * 16;
+        for (k = 0; k < m; k++) { int q = xtra_seq_note(k); if (q != 255) { if (q < lo) lo = q; if (q > hi) hi = q; } }
+        for (k = 0; k < 16; k++) {
+            int s = b0 + k, q = xtra_seq_note(s), x = x0 + k * cw;
+            uint16_t c = s >= n ? COL_LINE : (xtra_running() && xtra_on(1) && s == xtra_seq_pos()) ? COL_OR : COL_GRAY;
+            box(x, y, cw - 2, hh, s >= n ? COL_LINE : COL_DIM);
+            if (q != 255 && s < n) {
                 int f = hi > lo ? 3 + (q - lo) * (hh - 6) / (hi - lo) : hh / 2;
                 fill_rect(x + 2, y + hh - 1 - f, cw - 6, f, c);
             }
-            if (xtra_rec() && k == xtra_rec_cur()) hline(x, y + hh + 1, cw - 2, COL_OR);
+            if (xtra_rec() && s == xtra_rec_cur()) hline(x, y + hh + 1, cw - 2, COL_OR);
+        }
+        if (n > 16) {
+            for (k = 0; k < 4; k++)
+                fill_rect(x0 + k * 4 * cw, y + hh + 4, 4 * cw - 2, 3,
+                          k == pg ? COL_CREAM : k * 16 < n ? COL_GRAY : COL_LINE);
+            y += 6;                              /* (22 px in all, as before) */
         }
         y += hh + 4;
     }
     if (w == 2 || w == 6) y = dose_bar(y);
+#if POLI_ARP
+    if (w == XW_CARP) {   /* Parity: the classic arp's LATCH (REC) and the keys in its set, as the ARP's HOLD line */
+        poli_arp_view_t a;
+        char d[64], n[12];
+        poli_arp_view(&a);
+        cat(d, a.latch ? tr("REC LATCH ON", "REC ФИКС. ВКЛ") : tr("REC LATCH OFF", "REC ФИКС. ВЫКЛ"), "");
+        put_i(n, a.nheld);
+        cat(d, d, tr("  KEYS ", "  КЛАВ. ")); cat(d, d, n);
+        g_text(12, y, d, E_LAB, a.latch ? COL_OR : COL_GRAY);
+        y += th(E_LAB) + 2;
+        if (xtra_on(0) || xtra_on(1)) {   /* (cannot happen: they exclude each other; shown if it ever does) */
+            g_text(12, y, tr("ARP / SEQ OFF FIRST", "СНАЧАЛА АРП / СЕКВ ВЫКЛ"), E_LAB, COL_OR);
+            y += th(E_LAB) + 2;
+        }
+    } else
+#endif
     if (w >= 8) y = draw_xtra_df(w, y);
     else if (w >= 5 || w == 2 || w == 0) y = draw_xtra_wd(w, y);
     xtra_status(v, st);
     if (y + th(E_LAB) <= L_py1 - (ch ? 5 : 2))
-        g_text(12, y, st, E_LAB, (xtra_c2() != 3 && ((w >= 2 && w <= 4) || w >= 8)) ? COL_OR : COL_GRAY);
+        g_text(12, y, st, E_LAB, (xtra_c2() != 3 && ((w >= 2 && w <= 4) || XT_STATUS_LIVE(w))) ? COL_OR : COL_GRAY);
 }
+#if POLI_SPECTRUM
+static void spectrum_paint(void)
+{
+    int x, y, w, h, i, nblk, bk, x0, x1, bw, yb, yy;
+    int16_t snap[SMK_SA_N];
+    uint16_t now[SMK_SA_BARS];
+    spectrum_strip_rect(&x, &y, &w, &h);
+    box(x, y, w, h, COL_DIM);
+    if (SMK_SA_SNAP(snap, SMK_SA_N) == SMK_SA_N) {
+        smk_sa_analyze(snap, now, 0);
+        smk_sa_smooth(spec_shown, now);
+    }
+    for (i = 0; i < SMK_SA_BARS; i++) {
+        x0 = x + 2 + (i * (w - 4)) / SMK_SA_BARS;
+        x1 = x + 2 + ((i + 1) * (w - 4)) / SMK_SA_BARS;
+        if (x1 > x0 + 1)
+            x1--;
+        bw = x1 - x0;
+        if (bw < 1)
+            continue;
+        nblk = smk_sa_nblocks(spec_shown[i], h - 4);
+        yb = y + h - 2;
+        for (bk = 0; bk < nblk; bk++) {
+            yy = yb - (bk + 1) * (SMK_SA_BLK + SMK_SA_BLK_GAP) + SMK_SA_BLK_GAP;
+            if (yy < y + 1)
+                break;
+            fill_rect(x0, yy, bw, SMK_SA_BLK, smk_sa_blk_color(bk, nblk));
+        }
+    }
+}
+
+#endif
+#if POLI_EGPLOT
+static void draw_amp_eg(const poli_nav_view_t *v)
+{
+    const char *title = tr("AMP EG", "ОГИБ. У");
+    const char *sa = "1", *sb = tr("RPT", "ПОВТ");
+    int sh = seg_h(), sw = seg_w(sa, sb, 48), y = L_py0 + 4, trh = title_row_h();
+    panel(4, L_py0, 232, L_py1 - L_py0, 1);
+    g_text(12, y + (trh - th(E_PT)) / 2, title, E_PT, COL_CREAM);
+    segment(228 - 2 * sw - 4, y + (trh - sh) / 2, sw, sh, !v->switch_on, sa);
+    segment(228 - sw, y + (trh - sh) / 2, sw, sh, v->switch_on, sb);
+    CONT(5, L_py0 + 1, 230, L_py1 - L_py0 - 2);
+    ampenv_paint_plot();
+}
+
+static int env_nav_sig(int which)
+{
+    int base = which ? SLOT_ATK_A : SLOT_ATK_F;
+    return (poli_nav_pos(base) << 21) ^ (poli_nav_pos(base + 1) << 14)
+         ^ (poli_nav_pos(base + 2) << 7) ^ poli_nav_pos(base + 3);
+}
+
+/* Every voice window uses this panel: 1 px orange frame at x=4 and
+ * x=235, top at L_py0, bottom at L_py1-1. Partial 240-wide blits are
+ * cleared to COL_BG, so they would punch out those frame columns
+ * unless the frame is redrawn in the strip before the blit. */
+enum { UI_PANEL_X = 4, UI_PANEL_W = 232 };
+
+static void panel_restore_frame(int y, int h)
+{
+    int x0 = UI_PANEL_X, x1 = UI_PANEL_X + UI_PANEL_W - 1;
+    int y0 = L_py0, y1 = L_py1;
+    int a, b;
+    if (h < 1)
+        return;
+    a = y < y0 ? y0 : y;
+    b = y + h;
+    if (b > y1)
+        b = y1;
+    if (a < b) {
+        vline(x0, a, b - a, COL_OR);
+        vline(x1, a, b - a, COL_OR);
+    }
+    if (y <= y0 && y0 < y + h)
+        hline(x0, y0, UI_PANEL_W, COL_OR);
+    if (y <= y1 - 1 && y1 - 1 < y + h)
+        hline(x0, y1 - 1, UI_PANEL_W, COL_OR);
+}
+
+/* Partial blit of a tall plot in CV_MAX-sized strips. The canvas is
+ * 240 wide and starts as COL_BG; the interior is erased to COL_PANEL
+ * only (x=5..234, a 1 px gap inside the frame) so the plot, the
+ * moving dot, and the release stroke never write the frame pixels.
+ * The orange frame is then put back cheaply before the blit. */
+static void env_blit_plot(int y, int h, void (*paint)(void))
+{
+    int origin, sh, maxh;
+    maxh = (int)(CV_MAX / 240u);
+    if (maxh < 16)
+        return;
+    for (origin = y; origin < y + h; origin += maxh) {
+        sh = (y + h) - origin;
+        if (sh > maxh)
+            sh = maxh;
+        if (sh <= 0)
+            break;
+        cv_begin(240, (uint32_t)sh, COL_BG);
+        cv_oy = -origin;
+        fill_rect(UI_PANEL_X + 1, origin, UI_PANEL_W - 2, sh, COL_PANEL);
+        paint();
+        panel_restore_frame(origin, sh);
+        cv_oy = 0;
+        cv_blit(0, (uint32_t)origin);
+    }
+}
+
+/* Partial blit of the AMP ENV plot only, ~25 Hz. Main loop, never the
+ * audio ISR or TIMER5. Does not redraw the full 240x240 canvas.
+ * Shape follows the steadied nav positions; the moving dot follows the
+ * live engine stage/level. Engine coefficient jitter does not dirty. */
+#endif
+#if POLI_EGPLOT
+void poli_ui_ampenv_poll(uint32_t now)
+{
+    poli_nav_view_t v;
+    poli_ampenv_view_t ev;
+    int x, y, w, h, changed, sig;
+    if (poli_preset_mode() == PV_MODE_SAVE)
+        return;
+    poli_nav_view(&v);
+    if (v.xtra >= 0 || v.flat != 8)
+        return;                         /* merge: an EXTRAS window covers the AMP EG plot */
+    polivoks_ampenv_view(&ev);
+    sig = env_nav_sig(1);
+    changed = (ev.stage != ampenv_last_stage || ev.level != ampenv_last_level
+               || ev.rpt != ampenv_last_rpt || sig != (int)ampenv_last_atk);
+    if (!changed)
+        return;
+    if (ampenv_last_ms != 0u && now - ampenv_last_ms < (uint32_t)SMK_AMPENV_PERIOD_MS)
+        return;
+    ampenv_last_ms = now ? now : 1u;
+    ampenv_last_stage = ev.stage;
+    ampenv_last_level = ev.level;
+    ampenv_last_atk = sig;          /* reused as the nav-pos signature */
+    ampenv_last_rpt = ev.rpt;
+    layout();
+    ampenv_plot_rect(&x, &y, &w, &h);
+    if (w < 8 || h < 8)
+        return;
+    env_blit_plot(y, h, ampenv_paint_plot);
+}
+
+#else
+void poli_ui_ampenv_poll(uint32_t now) { (void)now; }
+#endif
+
+#if POLI_SPECTRUM
+/* Partial blit of the bottom-band analyser, every page, ~25 Hz.
+ * Main loop, never the audio ISR or TIMER5. Analysis runs only while
+ * the strip is visible (every page except the save screen). */
+void poli_ui_spectrum_poll(uint32_t now)
+{
+    int x, y, w, h;
+    if (poli_preset_mode() == PV_MODE_SAVE)
+        return;
+    if (spec_last_ms != 0u && now - spec_last_ms < (uint32_t)SMK_SA_PERIOD_MS)
+        return;
+    spec_last_ms = now ? now : 1u;
+    {   /* merge: an EXTRAS window shows its K1..K4 names in the footer instead of the analyser */
+        poli_nav_view_t nv;
+        poli_nav_view(&nv);
+        if (nv.xtra >= 0)
+            return;
+    }
+    layout();
+    spectrum_strip_rect(&x, &y, &w, &h);
+    if (w < 8 || h < 8)
+        return;
+    if ((uint32_t)240 * (uint32_t)h > CV_MAX)
+        return;
+    cv_begin(240, (uint32_t)h, COL_BG);
+    cv_oy = -y;
+    spectrum_paint();
+    cv_oy = 0;
+    cv_blit(0, (uint32_t)y);
+}
+
+#else
+void poli_ui_spectrum_poll(uint32_t now) { (void)now; }
+#endif
+
+#if POLI_EGPLOT
+static uint32_t filtenv_last_ms PV_FEAT_BSS;
+static int filtenv_last_stage PV_FEAT_BSS, filtenv_last_rpt PV_FEAT_BSS, filtenv_last_kt PV_FEAT_BSS,
+    filtenv_last_depth PV_FEAT_BSS;
+static int32_t filtenv_last_level PV_FEAT_BSS, filtenv_last_sig PV_FEAT_BSS;
+
+/* FILTER page (flat 5): full-width fader bars, filter-EG plot, and a
+ * right-hand column of self-contained DEPTH / KEY rows beside the plot
+ * so labels cannot collide with CUTOFF / RES / CONTOUR / DRIVE. */
+enum { FILTER_READOUT_L = 150, FILTER_PLOT_W = 130 }; /* 8 px gap, 78 px column */
+
+static void filter_page_geom(int *bar_y, int *rh,
+                             int *px, int *py, int *pw, int *ph)
+{
+    int ty = L_py0 + 4, trh = title_row_h();
+    int y = ty + trh + 2;
+    int row = th(E_LAB) > th(E_VAL) ? th(E_LAB) : th(E_VAL);
+    row += 2;                       /* tighter than row_h() so the plot stays tall */
+    int plot_top = y + 4 * row + 3;
+    int plot_h = (L_py1 - 4) - plot_top;
+    if (plot_h < 28) plot_h = 28;
+    if (bar_y) *bar_y = y;
+    if (rh) *rh = row;
+    if (px) *px = 12;
+    if (py) *py = plot_top;
+    if (pw) *pw = FILTER_PLOT_W;
+    if (ph) *ph = plot_h;
+}
+
+/* TB16 has no U+0025. A missing glyph is a hollow box that reads as a
+ * bracket; draw a compact Terminus-like percent instead (8x14 cell). */
+static const uint8_t FILTER_PCT[14] = {
+    0x00, 0x00, 0x62, 0x62, 0x04, 0x04, 0x08, 0x08, 0x10, 0x10, 0x46, 0x46, 0x00, 0x00
+};
+
+static void filter_draw_percent(int x, int y, uint16_t c)
+{
+    int row, col;
+    for (row = 0; row < 14; row++) {
+        unsigned mask = FILTER_PCT[row];
+        for (col = 0; col < 8; col++)
+            if (mask & (1u << (7 - col)))
+                PSET(x + col, y + row, c);
+    }
+}
+
+
+/* One readout row: gray label on the left, cream value right-aligned
+ * at x=228. with_pct appends a drawn '%' after the digits. */
+static void filter_readout_row(int y, const char *lab, const char *val, int with_pct)
+{
+    int vh = th(E_VAL) > 12 ? th(E_VAL) : 12;
+    int lh = th(E_LAB);
+    int h = lh > vh ? lh : vh;
+    int tx = FILTER_READOUT_L;
+    int digit_r = 228 - 8;      /* last 8 px cell reserved for optional % */
+    int vy = y + (h - th(E_VAL)) / 2;
+    int vw = g_tw(val, E_VAL);
+    int vx = digit_r - vw;
+    g_text(tx, y + (h - lh) / 2, lab, E_LAB, COL_GRAY);
+    g_text(vx, vy, val, E_VAL, COL_CREAM);
+    if (with_pct)
+        filter_draw_percent(digit_r, vy, COL_CREAM);
+}
+
+static void filter_paint_readouts(const poli_nav_view_t *v, int y0)
+{
+    char num[8], kt[8];
+    int row = th(E_LAB) > th(E_VAL) ? th(E_LAB) : th(E_VAL);
+    row += 4;
+    put_i(num, v->slot_pos[2]);     /* DEPTH = existing CONTOUR */
+    filter_readout_row(y0, tr("DEPTH", "ГЛУБ."), num, 0);
+    if (v->key_track <= 0) {
+        filter_readout_row(y0 + row, tr("KEY", "КЛ."), tr("OFF", "ВЫКЛ"), 0);
+    } else {
+        put_i(kt, v->key_track);
+        filter_readout_row(y0 + row, tr("KEY", "КЛ."), kt, 1);
+    }
+}
+
+static void filtenv_paint_plot(void)
+{
+    int x, y, w, h;
+    poli_ampenv_view_t ev;
+    poli_nav_view_t nv;
+    filter_page_geom(0, 0, &x, &y, &w, &h);
+    polivoks_filtenv_view(&ev);
+    env_paint_plot_at(0, x, y, w, h, &ev);
+    poli_nav_view(&nv);
+    filter_paint_readouts(&nv, y + 4);
+}
+
+static void draw_filter(const poli_nav_view_t *v)
+{
+    const char *title = tr("FILTER", "ФИЛЬТР");
+    const char *sa = tr("LP", "ФНЧ"), *sb = tr("BP", "ПФ");
+    const char *lab[4];
+    int sh = seg_h(), sw, y, trh = title_row_h(), rh, i, lw;
+    int px, py, pw, ph;
+    lab[0] = tr("CUTOFF", "СРЕЗ");
+    lab[1] = tr("RESONANCE", "РЕЗОНАНС");
+    lab[2] = tr("CONTOUR", "ОГИБ.");
+    lab[3] = tr("DRIVE", "ДРАЙВ");
+    sw = seg_w(sa, sb, 48);
+    panel(4, L_py0, 232, L_py1 - L_py0, 1);
+    y = L_py0 + 4;
+    g_text(12, y + (trh - th(E_PT)) / 2, title, E_PT, COL_CREAM);
+    segment(228 - 2 * sw - 4, y + (trh - sh) / 2, sw, sh, !v->switch_on, sa);
+    segment(228 - sw, y + (trh - sh) / 2, sw, sh, v->switch_on, sb);
+    CONT(5, L_py0 + 1, 230, L_py1 - L_py0 - 2);
+    filter_page_geom(&y, &rh, &px, &py, &pw, &ph);
+    lw = maxw(lab[0], lab[1], lab[2], lab[3]);
+    for (i = 0; i < 4; i++)
+        labeled_bar(y + i * rh, lw, lab[i], v->slot_pos[i], 127);
+    {
+        poli_ampenv_view_t ev;
+        polivoks_filtenv_view(&ev);
+        env_paint_plot_at(0, px, py, pw, ph, &ev);
+    }
+    filter_paint_readouts(v, py + 4);
+}
+
+void poli_ui_filtenv_poll(uint32_t now)
+{
+    poli_nav_view_t v;
+    poli_ampenv_view_t ev;
+    int x, y, w, h, changed, sig, depth, kt;
+    if (poli_preset_mode() == PV_MODE_SAVE)
+        return;
+    poli_nav_view(&v);
+    if (v.xtra >= 0 || v.flat != 5)
+        return;                         /* merge: an EXTRAS window covers the filter plot */
+    polivoks_filtenv_view(&ev);
+    sig = env_nav_sig(0);
+    depth = v.slot_pos[2];
+    kt = v.key_track;
+    changed = (ev.stage != filtenv_last_stage || ev.level != filtenv_last_level
+               || ev.rpt != filtenv_last_rpt || sig != (int)filtenv_last_sig
+               || depth != filtenv_last_depth || kt != filtenv_last_kt);
+    if (!changed)
+        return;
+    if (filtenv_last_ms != 0u && now - filtenv_last_ms < (uint32_t)SMK_AMPENV_PERIOD_MS)
+        return;
+    filtenv_last_ms = now ? now : 1u;
+    filtenv_last_stage = ev.stage;
+    filtenv_last_level = ev.level;
+    filtenv_last_rpt = ev.rpt;
+    filtenv_last_sig = sig;
+    filtenv_last_depth = depth;
+    filtenv_last_kt = kt;
+    layout();
+    filter_page_geom(0, 0, &x, &y, &w, &h);
+    if (w < 8 || h < 8)
+        return;
+    env_blit_plot(y, h, filtenv_paint_plot);
+    /* Readouts sit beside the plot and are redrawn by filtenv_paint_plot
+     * so this blit cannot blank them. */
+}
+#else
+void poli_ui_filtenv_poll(uint32_t now) { (void)now; }
+#endif
+
 static void paint(const poli_nav_view_t *v)
 {
     layout();
@@ -1407,13 +2116,26 @@ static void paint(const poli_nav_view_t *v)
     case 2: draw_modulator(v); break;
     case 3: draw_routing(v); break;
     case 4: draw_mixer(v); break;
-    case 5: bar_window(v, tr("FILTER", "ФИЛЬТР"), tr("LP", "ФНЧ"), tr("BP", "ПФ"),
-                       tr("CUTOFF", "СРЕЗ"), tr("RESONANCE", "РЕЗОНАНС"), tr("CONTOUR", "ОГИБ."), tr("DRIVE", "ДРАЙВ")); break;
+    case 5:
+#if POLI_EGPLOT
+        draw_filter(v); break;
+#else
+        bar_window(v, tr("FILTER", "ФИЛЬТР"), tr("LP", "ФНЧ"), tr("BP", "ПФ"),
+                   tr("CUTOFF", "СРЕЗ"), tr("RESONANCE", "РЕЗОНАНС"), tr("CONTOUR", "ОГИБ."), tr("DRIVE", "ДРАЙВ")); break;
+#endif
     case 6: onoff_window(v, tr("FILTER MOD", "МОД. ФИЛЬТРА"), tr("FROM MOD", "ОТ МОД."), tr("BASS", "БАС"),
                          tr("VELOCITY", "СИЛА")); break;
+#if POLI_EGPLOT
+    case 7:
+        bar_window(v, tr("FILTER EG", "ОГИБ. Ф"), "1", tr("RPT", "ПОВТ"),
+                   tr("ATTACK", "АТАКА"), tr("DECAY", "ЗАТУХ."), tr("SUSTAIN", "ПЬЕД."), tr("RELEASE", "ПОСЛЕЗВ")); break;
+    case 8:
+        draw_amp_eg(v); break;
+#else
     case 7: case 8:
         bar_window(v, v->flat == 7 ? tr("FILTER EG", "ОГИБ. Ф") : tr("AMP EG", "ОГИБ. У"), "1", tr("RPT", "ПОВТ"),
                    tr("ATTACK", "АТАКА"), tr("DECAY", "ЗАТУХ."), tr("SUSTAIN", "ПЬЕД."), tr("RELEASE", "ПОСЛЕЗВ")); break;
+#endif
     case 9: onoff_window(v, tr("AMP MOD", "МОД. УСИЛ."), tr("DEPTH", "ГЛУБИНА"), tr("KEY HOLD", "УДЕРЖ."), 0); break;
     case 11: draw_midi(v); break;
     default: draw_global(v); break;
@@ -1427,6 +2149,43 @@ static void paint(const poli_nav_view_t *v)
 #define POLI_STRIP_H 60
 _Static_assert(240u * POLI_STRIP_H <= CV_MAX, "Polivoks UI strip exceeds the canvas");
 _Static_assert(240 % POLI_STRIP_H == 0, "Polivoks UI strips must tile 240 rows");
+
+#if POLI_VALREPAINT
+/* Value-only repaint (the Elite's idea, done the FM-1 way). A knob that only moves a value (poli_nav_knob) repaints the
+ * screen from the panel's top down; the header (title, slot, '*') is neither painted nor sent. The message line, the
+ * K1-K4 footer or the analyser band are below it, so they come along. Main loop only. */
+static int ui_shown_dirty1 PV_FEAT_BSS, ui_shown_cur1 PV_FEAT_BSS;   /* what the last full draw showed, + 1 (0 = none yet) */
+/* 1: the header is still right (same slot, same '*'), and no preset message is up (a turn clears it) */
+int poli_ui_values_ok(void)
+{
+    poli_preset_view_t pv;
+    poli_preset_view(&pv);
+    return !pv.msg && pv.dirty + 1 == ui_shown_dirty1 && pv.cur + 1 == ui_shown_cur1 && poli_preset_mode() == PV_MODE_NONE;
+}
+void poli_ui_draw_values(void)
+{
+    /* Parity, FM-1: the same paint() as a full draw (as poli_ui_draw_bt does for the preset row), sent to the screen
+     * only from the panel's top down: the header strip is not painted or sent. The panel top is layout()'s formula,
+     * worked out here so the layout variables keep their old users (the audio interrupt's code stays as it was). */
+    poli_nav_view_t v;
+    int bh = (th(E_SEC) > th(E_TAB) ? th(E_SEC) : th(E_TAB)) + 6;
+    int sub_bot = 2 + th(E_MARK) + 2 + th(E_PRE);
+    int origin = (sub_bot > 2 + bh ? sub_bot : 2 + bh) + 1, h;
+    if (poli_preset_mode() == PV_MODE_SAVE)
+        return;
+    poli_nav_view(&v);
+    for (; origin < 240; origin += h) {
+        h = 240 - origin;
+        if (h > POLI_STRIP_H)
+            h = POLI_STRIP_H;
+        cv_begin(240, (uint32_t)h, COL_BG);
+        cv_oy = -origin;
+        paint(&v);
+        cv_oy = 0;
+        cv_blit(0, (uint32_t)origin);
+    }
+}
+#endif
 
 /* the preset row only (rows 22..36, the block-timer readout's band): same paint, one short strip */
 void poli_ui_draw_bt(void)
@@ -1446,6 +2205,14 @@ void poli_ui_draw(void)
     poli_nav_view_t v;
     int origin;
     poli_nav_view(&v);
+#if POLI_VALREPAINT
+    {
+        poli_preset_view_t pv;
+        poli_preset_view(&pv);
+        ui_shown_dirty1 = pv.dirty + 1;
+        ui_shown_cur1 = pv.cur + 1;
+    }
+#endif
 #ifdef POLI_UI_PROBE
     probe_view(&v);
 #endif

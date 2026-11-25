@@ -1,0 +1,85 @@
+Standalone Polivoks app. This file replaces the earlier "parent owns volt.c /
+this lane did not link" note. The linked image is firmware/src/volt.c in the
+reproduction tree (byte-identical to src/volt_standalone.c).
+
+Include order inside that one translation unit:
+
+  #include "platform.c"          /* HAL, LCD, USB, audio IRQ, MASTER knob */
+  #include "note_inc.c"
+  #include "poli_fcore.c"
+  #include "polivoks_limited.c"
+
+build.py compiles crt0.S, hal/fm1_vec.S, hal/fm1_isr.S, and volt.c. It does
+not compile Altair, Aelita, or RMIF. Those files are not in the standalone
+tree. No drum track is compiled.
+
+Audio path, from the pi32 disassembly of the 57788-byte image:
+  isr_alnk0 -> fm1_alnk0_irq
+    clears the half buffer
+    calls inst_polivoks
+  inst_polivoks tail-gotos polivoks_render
+  the IRQ then scales every sample by master_q12 (FM-1 MASTER adc) and
+  clamps to ±32767. That gain is platform code, not polivoks_set_output.
+
+Control path, same image, outside the render loop:
+  fm1_cstart (app_main inlined) calls midi_in, then polivoks_panel.
+  midi_in calls polivoks_midi for every queued USB/UART message.
+  lcd_sync calls midi_in while the idle flag is set (LCD_IDLE / app_idle).
+
+polivoks_midi, compiled into that image:
+  0x90 velocity > 0   note on, sets the MIDI gate
+  0x80, or 0x90 velocity 0   note off, clears the MIDI gate, gate = key_on
+  0xB0 controller 123  same as note off (held panel keys stay)
+  0xB0 controller 120  panic: zeroes gates, envelopes, filter, phase flags
+  0xC0                same panic body. Does not select another instrument.
+  poli_suspend / polivoks_panic are inlined there. They do not clear
+  poli_rep_f or poli_rep_a.
+
+polivoks_panel arguments from that same main loop, FM-1 ids only
+(platform.c enum, not the SMK-37 renumber):
+  keys                 fm1_in.notes, bit 0 = F3 .. bit 26 = G5
+  ENC_KNOB1 (2)        shape, sign only, both oscillators while linked
+  ENC_KNOB2 (3)        cutoff, 800 per detent, clamp 0..30000
+  ENC_KNOB3 (4)        resonance, 800 per detent, clamp 0..30000
+  ENC_KNOB4 (5)        drive, 800 per detent, clamp 2000..30000
+  BTN_FX (2)           low-pass / band-pass
+  BTN_ENV (4)          filter repeat latch
+  BTN_LFO (5)          amp repeat latch
+  BTN_GLO (7)          glide
+  BTN_ARP (10)         LFO shape, 0..3
+The disassembly takes enc_steps[2..5] and button edge bits 2, 4, 5, 7, and 10.
+
+Taken by the main loop and not passed into Polivoks:
+  ENC_PRESETS (6)      consumed so the queue does not grow; marks the
+                       settings record dirty. No second instrument, no panic.
+  BTN_SEL (3)          the edge word is consumed; the bit is ignored.
+  BTN_OCT_DOWN (0), BTN_OCT_UP (1)
+                       not read. In the multi-instrument image those bits
+                       were RMIF controls. They are not a Polivoks footage
+                       or keyboard-transpose path here.
+  BTN_EDIT, HOME, SAVE, SEQ, PLAY, REC
+                       consumed with the edge word and ignored.
+  ENC_SELECT (0), ENC_ALGORITHM (1)
+                       not taken.
+
+Host-only API, no device callsite in volt.c:
+  polivoks_set_shape2, footage, tune, detune, fm depth, mixer levels,
+  noise level, external buffer and level, LFO increment, pitch/cutoff/volume
+  modulation depths, contour amount, ADSR numbers, glide rate, duo, output
+  level. External audio into the filter is UNKNOWN on this board: the
+  platform MASTER adc is a gain after render, not a sample input.
+  polivoks_set_ext_buf is never called from volt.c.
+
+Repeat. The 180 up / 90 down counts are the constants in the limited voice
+that predates this lane (Polivoks-Filter-Core-v2 src/polivoks_limited.c).
+No sheet or manual page states them. While the latch is on, each sample
+adds 180 until 28000, then subtracts 90 until 0, then rises again. The
+manual only says the contour can repeat. Note-off clears the gate and does
+not clear the latch, so the triangle keeps running. Panic and program
+change clear the gate and the envelope, then the latch starts the triangle
+again from zero. That is not a stuck MIDI gate: after panic, poli_gate is 0
+unless a panel key is still down. Silence with the latch on requires
+toggling the latch off (BTN_LFO or BTN_ENV) or polivoks_init.
+
+Bass support, the two-op-amp filter, and the untraced resonance, damping,
+and hertz laws are unchanged. Do not flash.

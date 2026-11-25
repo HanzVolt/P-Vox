@@ -83,4 +83,45 @@ typedef struct {
 #define XF_MR_MAX (XF_MR_N - 2u * XF_N)         /* the longest REPEAT it holds */
 extern xf_par_t xf_par;                         /* poli_xtra.c */
 extern xf_stat_t xf_st;
+
+#include "poli_feat.h"
+#if POLI_PADREC
+/* Parity (23 Nov 2026): the Elite's pad-record on the FM-1 (poli_padrec.inc). The 16 white keys are the pads, in
+ * DRUM STEP's order; 8 grooves in flash blob 0. Window 12, as on the Elite. */
+enum { XW_PADREC = 12, XT_PADREC_SLOTS = 8, XT_PADREC_BLOB = 408 };
+int xtra_padrec_armed(void);
+int xtra_padrec_countin(void);
+int xtra_padrec_waiting(void);
+int xtra_padrec_mode(void);
+int xtra_padrec_quant(void);
+int xtra_padrec_slot(void);
+int xtra_padrec_step(void);
+int xtra_padrec_dirty(void);
+int xtra_padrec_can_undo(void);
+int xtra_padrec_slot_used(int slot);
+int xtra_padrec_lane_of_pad(int pad);
+int xtra_padrec_pad_of_lane(int lane);                /* FM-1: white key -> pad */
+int xtra_padrec_work_lane(int l);
+int xtra_padrec_lo(int i);
+int xtra_padrec_hi(int i);
+int xtra_padrec_get(int i);
+void xtra_padrec_knob(int i, int steps);
+void xtra_padrec_hit(int pad);
+void xtra_padrec_pad(int pad, int vel, uint32_t now); /* vel 0 = release; hold-erase */
+int xtra_padrec_rec(uint32_t now);                    /* 0 = refused (no core 2) */
+void xtra_padrec_undo(void);
+void xtra_padrec_clear(void);
+int xtra_padrec_save(void);                           /* working copy -> flash slot + RAM USER */
+int xtra_padrec_load(int slot);                       /* 0 = empty / bad slot */
+void xtra_padrec_step_move(int dir);
+int xtra_padrec_skip_lane(int l, int st);
+void xtra_padrec_sixteenth(uint32_t now, uint32_t st, int running);
+void xtra_padrec_init(void);
+void xtra_padrec_poll(uint32_t now);
+int xtra_padrec_export(void *p, uint32_t n);
+int xtra_padrec_import(const void *p, uint32_t n);
+#endif
+#if POLI_ARP
+enum { XW_CARP = 12 + POLI_PADREC };                  /* Parity: the CLASSIC ARP page, 13 (12 in a build without PAD REC) */
+#endif
 #endif
