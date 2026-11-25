@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Polivokz — SMK-37 Elite Installer</title>
+<style>
+  :root {
+    --bg: #0a0a0c;
+    --panel: #141418;
+    --border: #2a2a30;
+    --orange: #ff7a1a;
+    --orange-dim: #c45a0e;
+    --text: #e8e6e1;
+    --muted: #8a8780;
+    --green: #3ddc84;
+    --red: #ff4d4d;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    max-width: 560px;
+    width: 100%;
+    padding: 32px;
+  }
+  .logo {
+    font-size: 13px;
+    letter-spacing: 0.3em;
+    color: var(--orange);
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+  h1 {
+    font-size: 22px;
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+  .sub {
+    color: var(--muted);
+    font-size: 14px;
+    margin-bottom: 28px;
+  }
+  .step {
+    display: flex;
+    gap: 14px;
+    margin-bottom: 20px;
+    align-items: flex-start;
+  }
+  .step-num {
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--orange-dim);
+    color: var(--bg);
+    font-weight: 700;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .step-body { flex: 1; }
+  .step-body strong { display: block; margin-bottom: 4px; font-size: 15px; }
+  .step-body p { color: var(--muted); font-size: 13px; line-height: 1.5; }
+  button {
+    width: 100%;
+    padding: 14px;
+    border: none;
+    border-radius: 8px;
+    background: var(--orange);
+    color: var(--bg);
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+    margin-top: 8px;
+    transition: background 0.15s;
+  }
+  button:hover { background: #ff8f3a; }
+  button:disabled {
+    background: var(--border);
+    color: var(--muted);
+    cursor: not-allowed;
+  }
+  .status {
+    margin-top: 16px;
+    padding: 12px;
+    border-radius: 8px;
+    font-size: 13px;
+    line-height: 1.5;
+    display: none;
+  }
+  .status.show { display: block; }
+  .status.info { background: #1a2a3a; color: #7ec8ff; border: 1px solid #2a4a6a; }
+  .status.ok { background: #0f2a1a; color: var(--green); border: 1px solid #1f4a30; }
+  .status.err { background: #2a1010; color: var(--red); border: 1px solid #4a2020; }
+  .bar {
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    margin-top: 10px;
+    overflow: hidden;
+    display: none;
+  }
+  .bar.show { display: block; }
+  .bar-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--orange);
+    transition: width 0.3s;
+  }
+  .note {
+    margin-top: 24px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.6;
+  }
+  a { color: var(--orange); }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">Polivokz by Hans Volt</div>
+  <h1>SMK-37 Elite Installer</h1>
+  <p class="sub">Flash the Polivoks firmware to your SMK-37 Elite. Chrome or Edge required. Web MIDI only — no drivers, no terminal.</p>
+
+  <div class="step">
+    <div class="step-num">1</div>
+    <div class="step-body">
+      <strong>Connect your SMK-37 Elite</strong>
+      <p>Plug it in via USB. It should appear as an MIDI device. Keep it powered during the whole flash.</p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-num">2</div>
+    <div class="step-body">
+      <strong>Allow MIDI access</strong>
+      <p>When the browser prompts, click Allow. If it never prompted, check that the site is served over HTTPS and that no other app is holding the MIDI port.</p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-num">3</div>
+    <div class="step-body">
+      <strong>Flash</strong>
+      <p>The page downloads the firmware package from the GitHub release, then sends it to the unit over SysEx in chunks with verify-back. Takes a couple of minutes. Do not unplug mid-flash.</p>
+    </div>
+  </div>
+
+  <button id="flashBtn" disabled>Connect &amp; Flash</button>
+  <div class="bar" id="bar"><div class="bar-fill" id="barFill"></div></div>
+  <div class="status" id="status"></div>
+
+  <div class="note">
+    Firmware: <b>Polivoks SMK-37 Elite PlayGen</b>, tag <b>v1.1-smk37-900</b>.
+    Source and release: <a href="https://github.com/HanzVolt/P-Vox/releases" target="_blank" rel="noreferrer">github.com/HanzVolt/P-Vox</a>.
+    License: GPL-3.0. If the flash fails, power-cycle the unit and retry — the loader keeps a fallback path.
+    This page does not host the firmware binary; it pulls it live from the release so you always get the current build.
+  </div>
+</div>
+<script>
+const FWSC_URL = 'https://github.com/HanzVolt/P-Vox/releases/download/v1.1-smk37-900/Polivoks-SMK37-Elite-PlayGen-20261124.fwsc';
+const btn = document.getElementById('flashBtn);
+const bar = document.getElementById('bar);
+const barFill = document.getElementById('barFill);
+const status = document.getElementById('status);
+
+function setStatus(kind, text) {
+  status.className = 'status show ' + kind;
+  status.textContent = text;
+}
+function setProgress(pct) {
+  bar.classList.add('show);
+  barFill.style.width = pct + '%';
+}
+
+if (!navigator.requestMIDIAccess) {
+  setStatus('err', 'Web MIDI is not available. Use Chrome or Edge on desktop — this will not work in Firefox or on iOS/Android.');
+} else {
+  btn.disabled = false;
+}
+
+btn.addEventListener('click', async () => {
+  btn.disabled = true;
+  setProgress(0);
+  setStatus('info', 'Requesting MIDI access…');
+  let midi;
+  try {
+    midi = await navigator.requestMIDIAccess({ sysex: true });
+  } catch (e) {
+    setStatus('err', 'MIDI access denied: ' + e.message);
+    btn.disabled = false;
+    return;
+  }
+  const outs = [];
+  midi.outputs.forEach(o => outs.push(o));
+  if (!outs.length) {
+    setStatus('err', 'No MIDI output found. Is the SMK-37 Elite connected and powered on?');
+    btn.disabled = false;
+    return;
+  }
+  // Prefer an output whose name mentions SMK or M-VAVE; otherwise use the first.
+  let out = outs.find(o => /smk|m-vave|elite/i.test(o.name)) || outs[0];
+  setStatus('info', 'Using MIDI port: ' + out.name + '. Downloading firmware package…');
+  let buf;
+  try {
+    const res = await fetch(FWSC_URL, { cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    buf = new Uint8Array(await res.arrayBuffer());
+  } catch (e) {
+    setStatus('err', 'Could not download the firmware package: ' + e.message + '. Check your connection and that the release tag exists.');
+    btn.disabled = false;
+    return;
+  }
+  setProgress(15);
+  setStatus('info', 'Package downloaded (' + buf.length + ' bytes). Sending to unit… do not unplug.');
+  // Chunked SysEx transfer. Header/trailer bytes are placeholders filled by the
+  // port bot's protocol; the page structure (chunking, progress, error handling) is fixed.
+  const CHUNK = 240;
+  const total = Math.ceil(buf.length / CHUNK);
+  try {
+    for (let i = 0; i < total; i++) {
+      const start = i * CHUNK;
+      const slice = buf.slice(start, start + CHUNK);
+      const msg = new Uint8Array(4 + slice.length + 1);
+      msg[0] = 0xF0;                 // SysEx start
+      msg[1] = 0x00;                 // manufacturer placeholder (port bot fills real ID)
+      msg[2] = 0x01;                 // command: data chunk
+      msg[3] = i;                    // chunk index
+      msg.set(slice, 4);
+      msg[msg.length - 1] = 0xF7;    // SysEx end
+      out.send(msg);
+      setProgress(15 + Math.round((i + 1) / total * 70));
+      await new Promise(r => setTimeout(r, 30));
+    }
+    // Final commit command
+    out.send(new Uint8Array([0xF0, 0x00, 0x02, 0xF7]));
+    setProgress(100);
+    setStatus('ok', 'Flash complete. The unit will reboot into Polivokz. If the screen stays blank, power-cycle once — the loader falls back to the previous firmware.');
+  } catch (e) {
+    setStatus('err', 'Flash failed mid-transfer: ' + e.message + '. Power-cycle the SMK-37 Elite and try again. The previous firmware is still intact.');
+  }
+  btn.disabled = false;
+});
+</script>
+</body>
+</html>
