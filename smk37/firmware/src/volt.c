@@ -265,23 +265,33 @@ static void service_controls(void)
        writes a rest). PLAY starts / stops the transport. REC arms step recording and shows SEQ. */
     if (b & ((1u << BTN_ARP) | (1u << BTN_SEQ) | (1u << BTN_REC)) && pm != PV_MODE_NONE) poli_preset_cancel();
 #if POLI_ARP
+    /* A single ARP press used to run two handlers: on the press edge the EXTRAS
+     * ARPEGGIO page was opened or toggled (poli_nav_select_press), and on the
+     * release edge poli_arp_button() toggled the classic arp. One press could
+     * therefore switch the sounding (EXTRAS) arp off and the classic arp on, or
+     * with a slow frame / a hold leave both off. Toggle one arp, on the press
+     * edge only. Release is not passed to poli_arp_button, so it cannot toggle
+     * again; a hold still opens the classic page. */
     {
-        int was_on = poli_arp_on();
-        poli_arp_button((b & (1u << BTN_ARP)) != 0, (rel & (1u << BTN_ARP)) != 0,
+        int extras_ctx = xtra_on(0) || poli_nav_xtra() == 0;
+        if (b & (1u << BTN_ARP)) {
+            if (extras_ctx) {
+                if (poli_nav_xtra() != 0) poli_nav_xtra_open(0);
+                if (poli_nav_xtra() == 0) poli_nav_select_press();
+                else xtra_toggle(0);
+                if (xtra_on(0) && poli_arp_on()) poli_arp_set_on(0);
+            } else {
+                poli_arp_set_on(!poli_arp_on());
+                if (poli_arp_on() && xtra_on(0)) xtra_toggle(0);
+            }
+        }
+        poli_arp_button((!extras_ctx && (b & (1u << BTN_ARP)) != 0) ? 1 : 0, 0,
                         (fm1_in.buttons & (1u << BTN_ARP)) != 0, fm1_ms);
-        if (poli_arp_on() != was_on && poli_arp_on() && xtra_on(0))
-            xtra_toggle(0);             /* classic arp and EXTRAS arp are mutually exclusive */
         if (poli_arp_page_open() && (pm != PV_MODE_NONE ||
             (b & ((1u << BTN_HOME) | (1u << BTN_EDIT) | (1u << BTN_LFO) | (1u << BTN_FX) |
                   (1u << BTN_ENV) | (1u << BTN_GLO) | (1u << BTN_SAVE)))))
             poli_arp_page_close();
         if ((b & (1u << BTN_SEL)) && poli_arp_page_open()) poli_arp_latch_toggle();
-    }
-    if (b & (1u << BTN_ARP)) {
-        if (poli_arp_page_open() || poli_arp_on())
-            ; /* Elite classic arp owns the button while it is on or its page is open */
-        else if (poli_nav_xtra() == 0) poli_nav_select_press();
-        else poli_nav_xtra_open(0);
     }
 #else
     if (b & (1u << BTN_ARP)) {

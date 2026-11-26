@@ -1536,7 +1536,7 @@ static int draw_xtra_df(int w, int y)
         y += th(E_LAB) + 2;
         d[0] = 0;
         cat(d, xtra_on(9) ? tr("DUCK VOICE + ECHO", "ПРИЖИМ ГОЛОС + ЭХО") : tr("DUCK OFF", "ПРИЖИМ ВЫКЛ"),
-            xtra_flavour() >= 6 ? tr("  CRUSH", "  ДРОБЛ.") : "");
+            "");  /* CRUSH label dropped: BREAK/HARD crush is off */
     } else if (w == 10) {
         static const char *const G_EN[6] = { "K", "S", "C", "CH", "OH", "P" };
         static const char *const FX_EN[6] = { "FILL", "RPT", "REV", "STOP", "LP", "HP" };

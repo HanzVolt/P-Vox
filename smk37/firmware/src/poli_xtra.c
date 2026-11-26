@@ -690,7 +690,7 @@ static const uint8_t XT_KF_LANE[KF_N][17] = {
     { DI_BD9, DI_SD9, DI_SD9, DI_CP9, DI_CH9, DI_OH9, DI_LT9, DI_MT9, DI_HT9, DI_RS9, DI_RS9, DI_RS9, DI_LT9, DI_MT9, DI_HT9, DI_RD9, DI_CR9 },   /* HARD: driven + crushed */
 };
 static const uint16_t XT_KF_KPM[KF_N] = { 4096, 4096, 4096, 3650, 4096, 3870, 4300, 3870 };   /* the kick's pitch, Q12 */
-static const uint8_t XT_KF_CRUSH[KF_N] = { 0, 0, 0, 0, 0, 0, 1, 2 };
+static const uint8_t XT_KF_CRUSH[KF_N] = { 0, 0, 0, 0, 0, 0, 0, 0 };
 static const uint16_t XT_KF_DRV[KF_N] = { 0, 0, 0, 0, 0, 1024, 0, 6144 };                 /* added to DRIVE, Q12 */
 /* the packs' tempos (applied when PATTERN moves into a pack; TEMPO still turns after) */
 static const uint8_t XT_PACK_BPM[XT_PACKS] = { 126, 140, 174, 130 };   /* HOUSE DUBSTEP DNB TECHNO */
