@@ -5,7 +5,7 @@
     "synth"
   ],
   "image": "docs/card.png",
-  "sounds": "own: boot voice pending replacement with Hans Volt's own self-recorded version",
+  "sounds": "own: boot voice is Hans Volt's own recording of the line Polivoks by Hans Volt",
   "cheat": "https://raw.githubusercontent.com/HanzVolt/P-Vox/main/docs/P-Vox_User_Manual.pdf",
   "smk37": {
     "what": "Polivoks on the SMK-37 Elite — 37 velocity keys, 16 RGB pads, 8 encoders, 4 faders, two wheels. Same engine as the FM-1 build: 64-step sequencer, DRUM STEP, PAD REC, ONPLAY on K7. Branded Polivokz to avoid the Formanta trademark. Tested on real hardware by Hans Volt.",

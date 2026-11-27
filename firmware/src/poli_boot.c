@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /* Polivoks load screen (Hans, 2026-11-12, locked design): black, then ПОЛИВОКС (Terminus Bold 10x18 wordmark
  * face at 2x, cream) at the top and the FORM / HanzVolt HV logo directly underneath; both fade in together;
- * then the voice "Polivoks by Hans Volt" (Dmitry); then straight to the synth page (no hold, no fade-out).
+ * then the voice "Polivoks by Hans Volt" (Hans Volt's own recording); then straight to the synth page (no hold, no fade-out).
  *
  * This code is GPL-3.0-only. The HV logo data it draws (poli_boot_logo.h) is NOT: (C) Hans Volt (HanzVolt),
- * all rights reserved, see ATTRIBUTION.txt. The voice data (poli_boot_voice.h) is TTS output whose licence is
- * UNKNOWN (NOTES.md).
+ * all rights reserved, see ATTRIBUTION.txt. The voice data (poli_boot_voice.h) is Hans Volt's own recording;
+ * it is not offered under GPL-3.0 (ATTRIBUTION.txt).
  *
  * Runs once, in app_main, before the main loop. Nothing here is reachable from the audio ISR
  * (fm1_alnk0_irq): the ISR source is unchanged. The fade runs with the ISR live (the synth renders silence: no
