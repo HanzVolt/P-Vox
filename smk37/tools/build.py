@@ -181,7 +181,8 @@ def build_app():
             ("cc", "-c", FW / "hal" / "fm1_vec.S", "-o", OUT / "fm1_vec.o"),
             ("cc", "-c", FW / "hal" / "fm1_isr.S", "-o", OUT / "fm1_isr.o"),
             ("cc", "-c", FW / "hal" / "fm1_cpu1.S", "-o", OUT / "fm1_cpu1.o"),   # Core2-FxSeq: core 1's entry
-            ("cc", *flags, "-c", FW / "src" / "volt.c", "-o", OUT / "volt.o")]
+            ("cc", *flags, "-c", FW / "src" / "volt.c", "-o", OUT / "volt.o"),
+            ("cc", *flags, "-c", FW / "src" / "poli_drum_smp.c", "-o", OUT / "poli_drum_smp.o")]
     tc_all(*cmds)
     elf = OUT / "volt.elf"
     ld = FW / "app.ld"
@@ -191,9 +192,9 @@ def build_app():
             raise SystemExit("app.ld: the XIP LENGTH line was not found")
         ld = OUT / "app.ld"
         ld.write_text(txt.replace("LENGTH = 0x8DFBC", f"LENGTH = {APP_SLOT:#X}".replace("0X", "0x")))
-    print("link     crt0.o fm1_vec.o fm1_isr.o fm1_cpu1.o volt.o  (no libraries, no libfm1_engine.a)")
+    print("link     crt0.o fm1_vec.o fm1_isr.o fm1_cpu1.o volt.o poli_drum_smp.o  (no libraries, no libfm1_engine.a)")
     tc("pi32v2/bin/ld", "--gc-sections", "-e", "_start", "-T", ld, "-Map", OUT / "volt.map",
-       OUT / "crt0.o", OUT / "fm1_vec.o", OUT / "fm1_isr.o", OUT / "fm1_cpu1.o", OUT / "volt.o", "-o", elf)
+       OUT / "crt0.o", OUT / "fm1_vec.o", OUT / "fm1_isr.o", OUT / "fm1_cpu1.o", OUT / "volt.o", OUT / "poli_drum_smp.o", "-o", elf)
     for sect in ("text.bin", "data.bin", "ramtext.bin", "c1text.bin"):
         (OUT / sect).unlink(missing_ok=True)
     *_, syms, dis, rt = tc_all(("common/bin/objcopy", "-O", "binary", "-j", ".text", elf, OUT / "text.bin"),

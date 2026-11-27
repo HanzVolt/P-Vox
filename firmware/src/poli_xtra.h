@@ -46,6 +46,8 @@ typedef struct {
      * send levels into the echo and the reverb (Q15; each instrument's own send weight in its patch) */
     volatile int32_t mix_on, duck_on, duck_depth, duck_k, gate, step_smp, perf, rep_len, kdrive, crush, d_echo, d_rev;
     volatile uint32_t s16;
+    /* TUNE / DECAY for sampled drum playback (same mapping as xt_patches: 128+k*2, 32+k*3/2) */
+    volatile int32_t smp_tq, smp_dq;
 } xf_par_t;
 
 /* Wander-Drift: one drum instrument as core 1 plays it (main program computes it from poli_xtra.c's voicing table,

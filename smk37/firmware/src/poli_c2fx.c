@@ -8,9 +8,12 @@
  *           A time change crossfades the two read points over one half (no click).
  *   REVERB  Schroeder-Moorer: per side 4 combs with a one-pole damper in the loop, then 2 allpasses (g 0.5);
  *           left and right lengths differ (stereo spread). SIZE = comb feedback 0.70..0.94, DAMP, LEVEL.
- *   DRUMS   (Wander-Drift, 16 Nov 2026) a two-kit drum machine, mono into both sides: 26 synthesized
- *           instruments in an 808-style and a 909-style family (poli_xtra.c XT_VOICE), played by a pool of 6
- *           voices (xf_drum_hit, xf_drums_render). No samples. Hits come from the main program through a ring.
+ *   DRUMS   (Wander-Drift, 16 Nov 2026) a two-kit drum machine, mono into both sides: 26 instruments
+ *           in an 808-style and a 909-style family, played by a pool of 6 voices. Most instruments play
+ *           44.1 kHz IMA-ADPCM one-shots (poli_drum_smp.h). Core 0 decodes them into a RAM buffer
+ *           (xf_drums_prepare, in the audio interrupt before the job is handed off); core 1 only mixes
+ *           from RAM (drive, send, crush, duck). Instruments without a clip keep the synthesised voice
+ *           (poli_xtra.c XT_VOICE). Hits come from the main program through a ring.
  *
  * All of it is the "added" signal (xf_wet). It is turned down when the dry voice plus it would pass 32600
  * (the headroom stage below), so the output clamps (polivoks_render's +-30000, out_gain_block's +-32767)
@@ -22,6 +25,7 @@
  * use RAM only (tools/build.py checks it: no call or goto out of .c1_text, no flash address, no 64-bit
  * multiply). Q15 math in 32-bit words throughout. */
 #include "poli_xtra.h"
+#include "poli_drum_smp.h"
 
 #ifdef DINGHY_HOST
 #define XF_C1
@@ -171,15 +175,36 @@ typedef struct {
     uint32_t mph[6];
     int32_t minc[6];
     int32_t kick, send;                  /* Drift-Full: from the patch at the hit */
+    int32_t src;                         /* 0 synthesised, 1 sample (xf_pcm); RAM, core 1 may read it */
 } xf_dvoice_t;
 static xf_dvoice_t xf_dv[XF_DV] XT_KEEP;
 static int32_t xf_dbuf[XF_N] XT_KEEP;
 static int32_t xf_sbuf[XF_N] XT_KEEP;    /* Drift-Full: the drums' echo / reverb send bus */
 static int32_t xf_vbuf[XF_N] XT_KEEP;    /* Drift-Full: one voice, before its drive and its send */
+/* Core 0 decodes IMA one-shots into this RAM buffer; core 1 only mixes it. Not touched from .c1_text
+ * as a flash object: the clip table lives in a separate translation unit. */
+static int16_t xf_pcm[XF_DV][XF_N] XT_KEEP;
+typedef struct {
+    int32_t pred, idx, s0, s1, gain, env, edec;
+    uint32_t n, len, off, ph, step;
+    uint8_t done;
+} xf_smp_st_t;
+static xf_smp_st_t xf_sst[XF_DV] XT_KEEP;   /* decoder state: core 0 only */
+static const int16_t XF_IMA_STEP[89] = {
+    7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66, 73, 80, 88,
+    97, 107, 118, 130, 143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371, 408, 449, 494, 544, 598, 658,
+    724, 796, 876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066, 2272, 2499, 2749, 3024, 3327, 3660,
+    4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899, 15289, 16818,
+    18500, 20350, 22385, 24623, 27086, 29794, 32767
+};
+static const int8_t XF_IMA_IDX[8] = { -1, -1, -1, -1, 2, 4, 6, 8 };
 XF_IN void xf_drums_clear(void)
 {
     uint32_t j;
-    for (j = 0; j < XF_DV; j++) { xf_dv[j].inst = -1; xf_dv[j].tenv = xf_dv[j].nenv = 0; xf_dv[j].bursts = 0; }
+    for (j = 0; j < XF_DV; j++) {
+        xf_dv[j].inst = -1; xf_dv[j].tenv = xf_dv[j].nenv = 0; xf_dv[j].bursts = 0; xf_dv[j].src = 0;
+        xf_sst[j].done = 1; xf_sst[j].n = xf_sst[j].len = 0;
+    }
 }
 XF_IN int32_t xf_drums_active(void)
 {
@@ -187,16 +212,104 @@ XF_IN int32_t xf_drums_active(void)
     for (j = 0; j < XF_DV; j++) if (xf_dv[j].inst >= 0) return 1;
     return 0;
 }
-XF_C1 void xf_c1_drum_hit(uint32_t e)   /* (its own function in .c1_text: the hit loop stays small) */
+/* IMA one-shots are decoded on core 0 (this file, not in .c1_text): core 1 must not touch flash. */
+static __attribute__((noinline)) int32_t xf_ima_next(xf_smp_st_t *s)
 {
-    uint32_t in = e & 255u, vel = (e >> 8) & 255u, pm = e >> 16, j, k;
+    uint32_t c, st;
+    int32_t d;
+    if (s->n >= s->len)
+        return 0;
+    c = (uint32_t)(XT_SMP_ADPCM[s->off + (s->n >> 1)] >> ((s->n & 1u) * 4u)) & 15u;
+    s->n++;
+    st = (uint32_t)XF_IMA_STEP[s->idx];
+    d = (int32_t)(st >> 3);
+    if (c & 4u) d += (int32_t)st;
+    if (c & 2u) d += (int32_t)(st >> 1);
+    if (c & 1u) d += (int32_t)(st >> 2);
+    s->pred += c & 8u ? -d : d;
+    if (s->pred > 32767) s->pred = 32767;
+    if (s->pred < -32768) s->pred = -32768;
+    s->idx += XF_IMA_IDX[c & 7u];
+    if (s->idx < 0) s->idx = 0;
+    if (s->idx > 88) s->idx = 88;
+    return s->pred;
+}
+static __attribute__((noinline)) void xf_smp_start(uint32_t j, uint32_t sid, uint32_t inst_pm, uint32_t hit_pm, int32_t vel)
+{
+    xf_smp_st_t *s = &xf_sst[j];
+    uint32_t tq = (uint32_t)xf_par.smp_tq;
+    int32_t dq = xf_par.smp_dq, T;
+    uint64_t step;
+    if (sid >= XT_SMP_N) { s->done = 1; s->len = 0; return; }
+    s->off = XT_SMP[sid].off;
+    s->len = XT_SMP[sid].n;
+    s->pred = 0;
+    s->idx = 0;
+    s->n = 0;
+    s->done = 0;
+    s->ph = 0;
+    s->s0 = xf_ima_next(s);
+    s->s1 = xf_ima_next(s);
+    if (tq == 0u) tq = 256u;
+    if (inst_pm == 0u) inst_pm = 4096u;
+    if (hit_pm == 0u) hit_pm = 4096u;
+    /* 16.16 step = tq * inst_pm * hit_pm / 65536 (unity at tq=256, pm=4096) */
+    step = (uint64_t)tq * (uint64_t)inst_pm * (uint64_t)hit_pm;
+    s->step = (uint32_t)(step >> 16);
+    if (s->step == 0u) s->step = 1u;
+    s->gain = vel * 258;
+    s->env = 32767;
+    if (dq <= 0 || dq >= 128) {
+        s->edec = 32767;                 /* default and above, or unset: play the whole clip */
+    } else {
+        T = (int32_t)((uint32_t)s->len * (uint32_t)dq / 128u);
+        if (T < 32) T = 32;
+        s->edec = 32768 - (16 * 32768) / T;
+        if (s->edec < 1) s->edec = 1;
+        if (s->edec > 32767) s->edec = 32767;
+    }
+}
+static __attribute__((noinline)) void xf_smp_render(uint32_t j)
+{
+    xf_smp_st_t *s = &xf_sst[j];
+    uint32_t i, b;
+    int32_t env = s->env, edec = s->edec, gain = s->gain;
+    for (b = 0; b < XF_N; b += 16u) {
+        if (edec < 32767) env = xf_mq(env, edec);
+        for (i = b; i < b + 16u; i++) {
+            int32_t d, y, g;
+            if (s->done) { xf_pcm[j][i] = 0; continue; }
+            d = s->s1 - s->s0;
+            y = s->s0 + (int32_t)((d * (int32_t)(s->ph & 0xFFFFu)) >> 16);
+            g = xf_mq(gain, env);
+            xf_pcm[j][i] = (int16_t)xf_sat16(xf_mq(y, g));
+            s->ph += s->step;
+            while (!s->done && s->ph >= 65536u) {
+                s->ph -= 65536u;
+                s->s0 = s->s1;
+                if (s->n >= s->len) { s->done = 1; s->s1 = 0; }
+                else s->s1 = xf_ima_next(s);
+            }
+            if (edec < 32767 && env < 8) s->done = 1;
+        }
+    }
+    s->env = env;
+    xf_dv[j].tenv = s->done ? 0 : xf_mq(gain, env);
+}
+/* Hit allocation runs on core 0 (xf_drums_prepare) so the IMA decoder can read the clip table in flash. */
+static __attribute__((noinline)) void xf_drum_hit(uint32_t e)
+{
+    uint32_t in = e & 255u, vel = (e >> 8) & 255u, pm = e >> 16, j, k, slot;
     int32_t lvl = (int32_t)vel * 258, best = 0x7FFFFFFF;
     xf_dvoice_t *v = 0;
     const xf_patch_t *p;
     if (in >= XF_DI) return;
     p = &xf_patch[in];
     for (j = 0; j < XF_DV; j++) {
-        if (p->choke >= 0 && xf_dv[j].inst == p->choke) { xf_dv[j].inst = -1; xf_dv[j].tenv = xf_dv[j].nenv = 0; xf_dv[j].bursts = 0; }
+        if (p->choke >= 0 && xf_dv[j].inst == p->choke) {
+            xf_dv[j].inst = -1; xf_dv[j].tenv = xf_dv[j].nenv = 0; xf_dv[j].bursts = 0; xf_dv[j].src = 0;
+            xf_sst[j].done = 1;
+        }
         if (xf_dv[j].inst == (int32_t)in) v = &xf_dv[j];
     }
     if (!v) for (j = 0; j < XF_DV; j++) if (xf_dv[j].inst < 0) { v = &xf_dv[j]; v->lp = v->bp = 0; break; }
@@ -208,10 +321,20 @@ XF_C1 void xf_c1_drum_hit(uint32_t e)   /* (its own function in .c1_text: the hi
         int32_t dd = xf_par.duck_depth * (int32_t)vel / 127;
         if (dd > xs.duck) xs.duck = dd;
     }
+    slot = (uint32_t)(v - xf_dv);
     v->inst = (int32_t)in;
     v->kick = p->kick; v->send = p->send;
     v->lp = v->bp = 0;
     v->ph = 0;
+    if (XT_SMP_ID[in] != 255u) {
+        v->src = 1;
+        v->tenv = lvl;
+        v->nenv = 0;
+        v->bursts = 0;
+        xf_smp_start(slot, XT_SMP_ID[in], XT_SMP_PM[in], pm, (int32_t)vel);
+        return;
+    }
+    v->src = 0;
     v->tenv = xf_mq(p->tamp, lvl);
     v->penv = 32767;
     v->nlev = (p->namp || p->mn) ? lvl : 0;
@@ -225,6 +348,24 @@ XF_C1 void xf_c1_drum_hit(uint32_t e)   /* (its own function in .c1_text: the hi
         for (k = 0; k < 6u; k++) v->minc[k] = (v->minc[k] >> 12) * (int32_t)pm;
     }
 }
+/* Consume the hit ring and decode one half of each sampled voice. Called from the audio interrupt
+ * only while core 1 is idle, immediately before the job is started. */
+static __attribute__((noinline)) void xf_drums_prepare(void)
+{
+    uint32_t j, k;
+    for (j = 0; j < XF_DV; j++) {
+        if (xf_dv[j].src && xf_sst[j].done) {
+            xf_dv[j].inst = -1; xf_dv[j].tenv = xf_dv[j].nenv = 0; xf_dv[j].src = 0;
+        }
+    }
+    k = xf_par.trw;
+    if (k - xs.trr > XF_TRQ) xs.trr = k - XF_TRQ;
+    for (; xs.trr != k; xs.trr++)
+        if (!xs.fade) xf_drum_hit(xf_par.trq[xs.trr & (XF_TRQ - 1u)]);
+    for (j = 0; j < XF_DV; j++)
+        if (xf_dv[j].inst >= 0 && xf_dv[j].src)
+            xf_smp_render(j);
+}
 #define XF_SQ(k) do { v->mph[k] += (uint32_t)v->minc[k]; src += (int32_t)v->mph[k] < 0 ? -ma : ma; } while (0)
 XF_C1 void xf_c1_drums_render(void)
 {
@@ -235,6 +376,21 @@ XF_C1 void xf_c1_drums_render(void)
     for (j = 0; j < XF_DV; j++) {
         xf_dvoice_t *v = &xf_dv[j];
         if (v->inst < 0) continue;
+        if (v->src) {                    /* already decoded on core 0 into xf_pcm; mix only */
+            int32_t isk = v->kick && kd > 4096, sn = v->send;
+            for (i = 0; i < XF_N; i++) {
+                int32_t x = xf_pcm[j][i];
+                if (isk) {
+                    int32_t t = (x * (kd >> 4)) >> 8;
+                    if (t > 32767) t = 32767;
+                    if (t < -32767) t = -32767;
+                    x = (3 * t - (((t * t) >> 15) * t >> 15)) >> 1;
+                }
+                xf_dbuf[i] += x;
+                if (sn) xf_sbuf[i] += xf_mq(x, sn);
+            }
+            continue;
+        }
         for (b = 0; b < XF_N; b += 16u) {
             int32_t te, ne, inc, ma = v->mamp, na = v->namp, f = v->f, q = v->q, lp = v->lp, bp = v->bp, mode = v->mode, mn = v->mn;
             v->tenv = xf_mq(v->tenv, v->tdec);
@@ -475,7 +631,7 @@ XF_C1 void xf_c1_mix(uint32_t dlen_r, uint32_t dlen_n, int32_t xstep, int32_t fb
 /* the job: xf_dry (one half of the finished voice) -> xf_wet. Core 1 (host: inline) */
 XF_C1 void xf_c1_job(uint32_t arg)
 {
-    uint32_t t0 = fm1_c1_ticks(), i, k, req;
+    uint32_t t0 = fm1_c1_ticks(), i, req;
     int32_t dpk = 0, wpk = 0, x, dsend_t, rsend_t, dlvl_t, rlvl_t, drl_t, fb, tone, rfb, damp, allow, gt, g0, gs;
     int32_t xfade = 0, xstep = 0, drums_on, dopk = 0, ropk = 0, mixw;
     uint32_t dlen_r, dlen_n, dlen_new;
@@ -487,10 +643,7 @@ XF_C1 void xf_c1_job(uint32_t arg)
     rsend_t = xf_par.rev_on && !xs.fade ? 32767 : 0;
     dlvl_t = xf_par.dly_lvl; rlvl_t = xf_par.rev_lvl; drl_t = xf_par.drm_lvl;
     fb = xf_par.dly_fb; tone = xf_par.dly_tone; rfb = xf_par.rev_fb; damp = xf_par.rev_damp;
-    k = xf_par.trw;                      /* the drum hits since the last half (at most the ring's 16) */
-    if (k - xs.trr > XF_TRQ) xs.trr = k - XF_TRQ;
-    for (; xs.trr != k; xs.trr++)
-        if (!xs.fade) xf_c1_drum_hit(xf_par.trq[xs.trr & (XF_TRQ - 1u)]);
+    /* Hits were taken on core 0 in xf_drums_prepare(), before this job started. */
     if (dsend_t) xs.dalive = 1;
     if (rsend_t) xs.ralive = 1;
     drums_on = xf_drums_active();
@@ -675,6 +828,7 @@ static inline void xf_isr_mix(int32_t *o)
         o[j] = k + xf_wet[j];
         o[j + 1u] = k + xf_wet[j + 1u];
     }
+    xf_drums_prepare();
     fm1_cpu1_run(xf_c1_job, 0);
 }
 

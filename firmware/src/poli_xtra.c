@@ -348,6 +348,8 @@ void xtra_push(void)
         xf_par.d_echo = xt_q15_sq(xt.k[XW_DFX][2]);
         xf_par.d_rev = xt_q15_sq(xt.k[XW_DFX][3]);
         xf_par.mix_on = xt_mix_wanted() && xt.c2 == 3;
+        xf_par.smp_tq = 128 + xt.k[XW_DRUM][2] * 2;
+        xf_par.smp_dq = 32 + xt.k[XW_DRUM][3] * 3 / 2;
     }
 }
 int xtra_fx_wanted(void) { return xt.on[XW_DLY] || xt.on[XW_REV] || xt.on[XW_DRUM] || xt_mix_wanted(); }
